@@ -1242,7 +1242,8 @@ function fuzzyFind(dict,name) {
 
 function espnGameToSlateText(g) {
   const sep = g.neutral ? ' vs ' : ' @ ';
-  return [g.away + sep + g.home, g.event, g.time, g.spread || 'TBD', g.total || 'TBD'].join(' | ');
+  // Embed abbrs as 6th field so parseSlateText can recover them
+  return [g.away + sep + g.home, g.event, g.time, g.spread || 'TBD', g.total || 'TBD', (g.awayAbbr||'') + '@' + (g.homeAbbr||'')].join(' | ');
 }
 
 function applyESPNFilter() {
@@ -1281,10 +1282,16 @@ function parseSlateText(text) {
       const matchup = parts[0] || '';
       const neutral = matchup.includes(' vs ');
       const sides = matchup.split(neutral ? ' vs ' : ' @ ').map(function(s){ return s.trim(); });
+      // parts[5] = "ANA@OTT" abbr pair embedded by espnGameToSlateText
+      const abbrPair = (parts[5] || '').split('@');
+      const awayAbbr = abbrPair[0] || '';
+      const homeAbbr = abbrPair[1] || '';
       return {
         id: 'g' + (i + 1),
         away: sides[0] || matchup,
         home: sides[1] || '?',
+        awayAbbr: awayAbbr,
+        homeAbbr: homeAbbr,
         neutral_site: neutral,
         event: parts[1] || 'Unknown',
         time: parts[2] || 'TBD',
@@ -1645,7 +1652,7 @@ async function callModelAPI(cfg, today, slateGames) {
       awayAbbr: g.awayAbbr || g.away_abbrev || '',
       homeAbbr: g.homeAbbr || g.home_abbrev || '',
       // Team-code key matches what the model uses (e.g. "ANA_OTT")
-      code: ((g.awayAbbr || g.away || '').slice(0,4).toUpperCase().replace(/ /g,'_') + '_' + (g.homeAbbr || g.home || '').slice(0,4).toUpperCase().replace(/ /g,'_')),
+      code: ((g.awayAbbr || '').toUpperCase() + '@' + (g.homeAbbr || '').toUpperCase()),
       away_record: g.awayRecord || '',
       home_record: g.homeRecord || '',
       event: g.event, time: g.time,
