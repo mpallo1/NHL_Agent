@@ -1642,6 +1642,10 @@ async function callModelAPI(cfg, today, slateGames) {
     return {
       id: g.id || ('g' + (i+1)),
       away: g.away, home: g.home,
+      awayAbbr: g.awayAbbr || g.away_abbrev || '',
+      homeAbbr: g.homeAbbr || g.home_abbrev || '',
+      // Team-code key matches what the model uses (e.g. "ANA_OTT")
+      code: ((g.awayAbbr || g.away || '').slice(0,4).toUpperCase().replace(/ /g,'_') + '_' + (g.homeAbbr || g.home || '').slice(0,4).toUpperCase().replace(/ /g,'_')),
       away_record: g.awayRecord || '',
       home_record: g.homeRecord || '',
       event: g.event, time: g.time,
@@ -1668,14 +1672,22 @@ async function callModelAPI(cfg, today, slateGames) {
       away_impact_missing: g.away_impact_missing || [],
       home_impact_missing: g.home_impact_missing || [],
       stats: {
-        away_xgf:  ak.xgf_pct,  home_xgf:  hk.xgf_pct,
-        away_hdcf: ak.hdcf_pct, home_hdcf: hk.hdcf_pct,
+        // Advanced (HR): prefer xgf_pct, fall back to GF-rate proxy as display
+        away_xgf:  ak.xgf_pct  != null ? ak.xgf_pct  : (ak.gf_per_game && ak.ga_per_game ? +(ak.gf_per_game/(ak.gf_per_game+ak.ga_per_game)*100).toFixed(1) : null),
+        home_xgf:  hk.xgf_pct  != null ? hk.xgf_pct  : (hk.gf_per_game && hk.ga_per_game ? +(hk.gf_per_game/(hk.gf_per_game+hk.ga_per_game)*100).toFixed(1) : null),
+        away_hdcf: ak.hdcf_pct != null ? ak.hdcf_pct : (ak.sh_pct != null ? ak.sh_pct : null),
+        home_hdcf: hk.hdcf_pct != null ? hk.hdcf_pct : (hk.sh_pct != null ? hk.sh_pct : null),
         away_sv:   ak.sv_pct,   home_sv:   hk.sv_pct,
-        away_pp:   ak.pp_pct,   home_pp:   hk.pp_pct,
+        away_pp:   ak.pp_pct   != null ? ak.pp_pct   : (ak.pp_goals_per_game != null ? +(ak.pp_goals_per_game*100/0.5).toFixed(1) : null),
+        home_pp:   hk.pp_pct   != null ? hk.pp_pct   : (hk.pp_goals_per_game != null ? +(hk.pp_goals_per_game*100/0.5).toFixed(1) : null),
         away_pk:   ak.pk_pct,   home_pk:   hk.pk_pct,
         away_pdo:  ak.pdo,      home_pdo:  hk.pdo,
         away_cf:   ak.cf_pct,   home_cf:   hk.cf_pct,
         away_xgf5v5: ak.xgf_pct_5v5, home_xgf5v5: hk.xgf_pct_5v5,
+        // ESPN raw
+        away_gf_pg: ak.gf_per_game, home_gf_pg: hk.gf_per_game,
+        away_ga_pg: ak.ga_per_game, home_ga_pg: hk.ga_per_game,
+        using_espn_proxy: ak.xgf_pct == null,
       },
     };
   }).filter(Boolean);
@@ -1739,7 +1751,7 @@ async function callModelAPI(cfg, today, slateGames) {
     method: 'POST', headers,
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 2000,
+      max_tokens: 4000,
       system: 'You are a sharp Las Vegas sportsbook analyst. Return only valid compact JSON, no prose, no markdown fences.',
       messages: [{ role: 'user', content: prompt }]
     })
@@ -1757,13 +1769,26 @@ async function callModelAPI(cfg, today, slateGames) {
   const j1 = s.indexOf('{'), j2 = s.lastIndexOf('}');
   let modelOut = {};
   try { modelOut = JSON.parse(s.slice(j1, j2 + 1)); }
-  catch(e) { addLog('Analysis JSON parse failed — using computed results only: ' + e.message, 'warn'); }
+  catch(e) {
+    addLog('Analysis JSON parse failed — rendering cards from formula data: ' + e.message, 'warn');
+    // Try to salvage partial JSON by truncating at last complete game entry
+    try {
+      const partial = s.slice(j1);
+      const lastBrace = partial.lastIndexOf('"}');
+      if (lastBrace > 0) {
+        const salvage = partial.slice(0, lastBrace + 2) + '}}';
+        modelOut = JSON.parse(salvage);
+        addLog('Partial JSON salvaged', 'ok');
+      }
+    } catch(e2) {}
+  }
 
   const analyses = modelOut.analyses || {};
 
   // Merge model analysis back into pre-computed game objects
+  // Always produces finalGames even if modelOut is empty — cards render from formula data
   const finalGames = preGames.map(function(g) {
-    const a = analyses[g.id] || {};
+    const a = analyses[g.id] || analyses[g.code] || {};
     return Object.assign({}, g, {
       key_factors: a.key_factors || [],
       analysis: a.analysis || '',
@@ -1773,7 +1798,7 @@ async function callModelAPI(cfg, today, slateGames) {
   });
 
   const finalPicks = evGames.map(function(g) {
-    const a = analyses[g.id] || {};
+    const a = analyses[g.id] || analyses[g.code] || {};
     return {
       game_id: g.id,
       play: g.play,
