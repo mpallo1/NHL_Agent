@@ -182,7 +182,6 @@
       <div class="summary-stat"><div class="ss-label">Season Record</div><div class="ss-val" id="ss-record">—</div><div class="ss-sub">ATS this season</div></div>
       <div class="summary-stat"><div class="ss-label">ROI</div><div class="ss-val" id="ss-roi">—</div><div class="ss-sub">vs −110 juice</div></div>
     </div>
-    <div id="picksElevatorContainer"></div>
     <div id="gamesContainer">
       <div class="empty"><div class="empty-icon">🏒</div>No analysis run yet.<br>Hit <strong>Run Daily Analysis</strong> to scan today's slate.</div>
     </div>
@@ -699,14 +698,28 @@ async function autoFetchESPN() {
       }
 
       const note = (comp.notes && comp.notes[0] && comp.notes[0].headline) || 'NHL';
+      // Parse projected starters from probables
+      function parseProbable(competitor) {
+        const prob = competitor.probables && competitor.probables[0];
+        if (!prob) return null;
+        return {
+          name:       prob.athlete && prob.athlete.fullName || prob.displayName || null,
+          id:         prob.athlete && prob.athlete.id || prob.playerId || null,
+          confidence: prob.status && prob.status.type || 'unknown',
+        };
+      }
+      const awayProb = parseProbable(away);
+      const homeProb = parseProbable(home);
       return {
         id:          ev.id,
         away:        away.team.displayName,
         awayAbbr:    away.team.abbreviation,
         awayRecord:  away.records && away.records[0] ? away.records[0].summary : null,
+        awayProb:    awayProb,
         home:        home.team.displayName,
         homeAbbr:    home.team.abbreviation,
         homeRecord:  home.records && home.records[0] ? home.records[0].summary : null,
+        homeProb:    homeProb,
         away_team_id: away.team.id,
         home_team_id: home.team.id,
         neutral:     !!comp.neutralSite,
@@ -794,7 +807,8 @@ async function autoFetchESPN() {
               _espnGoalieStats[g.fullName] = {
                 sv_pct: sm.savePct, gaa: sm.avgGoalsAgainst,
                 games: sm.games, wins: sm.wins,
-                teamAbbr: tAbbr, teamName: tName
+                teamAbbr: tAbbr, teamName: tName,
+                espnId: g.id
               };
               goalieTotal++;
             }
@@ -1377,7 +1391,6 @@ async function runAgent(slateOverride) {
     }
 
     renderGames(state.todayGames, state.todayPicks, cfg);
-    renderPicksElevator(state.todayPicks, state.todayGames);
     updateSummaryFromData(result);
     document.getElementById('emailPreview').innerHTML = buildEmailPreviewHTML(result, today);
     document.getElementById('sendEmailBtn').disabled = false;
@@ -1594,29 +1607,23 @@ async function callModelAPI(cfg, today, slateGames) {
              (eg.homeAbbr === g.homeAbbr || eg.home === g.home);
     });
 
-    // Build starter objects from ESPN goalie cache
-    // We don't know who's starting — use team's best goalie by games played
-    function getBestGoalie(teamAbbr, teamName) {
-      const teamId = _espnTeamIdMap[teamAbbr];
-      let best = null, bestGames = -1;
-      for (const [name, stats] of Object.entries(_espnGoalieStats)) {
-        // Match by checking if goalie is in this team's roster via our earlier fetch
-        // Approximation: find goalies whose team abbr prefix matches
-        if (stats.teamAbbr === teamAbbr || stats.teamName === teamName) {
-          if ((stats.games || 0) > bestGames) { best = { name, ...stats }; bestGames = stats.games || 0; }
-        }
+    // Get projected starters from ESPN probables (stored on espnGame during auto-fetch)
+    // Then look up their individual season SV% from _espnGoalieStats by name
+    function buildStarter(prob, teamStats) {
+      if (!prob || !prob.name) {
+        return { name: null, sv_pct: teamStats.sv_pct || null, confidence: 'unknown' };
       }
-      return best ? { name: best.name, sv_pct: best.sv_pct, confidence: 'projected' } : { name: null, sv_pct: null, confidence: 'unknown' };
+      // Look up season SV% by name match in goalie stats
+      const gs = _espnGoalieStats[prob.name];
+      const sv_pct = gs ? gs.sv_pct : (teamStats.sv_pct || null);
+      return { name: prob.name, sv_pct: sv_pct, confidence: prob.confidence || 'projected' };
     }
 
-    // Try abbr-based lookup first, then fall back to team SV%
     const awayStats = fuzzyFind(allStats, g.away) || {};
     const homeStats = fuzzyFind(allStats, g.home) || {};
-    const awaySV = getGoalieSVPct(null, awayStats);
-    const homeSV = getGoalieSVPct(null, homeStats);
 
-    const awayStarter = { name: null, sv_pct: awaySV, confidence: 'projected' };
-    const homeStarter = { name: null, sv_pct: homeSV, confidence: 'projected' };
+    const awayStarter = buildStarter(espnGame && espnGame.awayProb, awayStats);
+    const homeStarter = buildStarter(espnGame && espnGame.homeProb, homeStats);
 
     return Object.assign({}, g, {
       away_kenpom:  awayStats,
