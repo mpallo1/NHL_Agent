@@ -799,7 +799,56 @@ async function autoFetchESPN() {
 
 let _nhlGoalieChannel = null;
 
-const NHL_GOALIE_SCRAPER = '(function(){try{var API="https://api-web.nhle.com/v1/";var STATS_API="https://api.nhle.com/stats/rest/en/goalie/summary?isAggregate=false&isGame=false&sort=[{\\"property\\":\\"savePct\\",\\"direction\\":\\"DESC\\"}]&start=0&limit=100&cayenneExp=seasonId=20252026 and gameTypeId=2";async function run(){var allGoalies={};try{var sr=await fetch(STATS_API);var sd=await sr.json();(sd.data||[]).forEach(function(g){allGoalies[g.goalieFullName]={sv_pct:g.savePct,gaa:g.goalsAgainstAverage,games:g.gamesPlayed,wins:g.wins,losses:g.losses,ot_losses:g.otLosses,shots_against:g.shotsAgainst,saves:g.saves,shutouts:g.shutouts,toi:g.timeOnIce,team:g.teamAbbrevs,playerId:g.playerId};});}catch(e){console.warn("Stats API failed, trying Web API fallback");}if(Object.keys(allGoalies).length===0){try{var lr=await fetch(API+"goalie-stats-leaders/20252026/2?categories=savePctg&limit=100");var ld=await lr.json();(ld.data||ld||[]).forEach(function(g){if(g.firstName&&g.lastName){var name=g.firstName.default+" "+g.lastName.default;allGoalies[name]={sv_pct:g.savePctg,gaa:g.goalsAgainstAvg,games:g.gamesPlayed,wins:g.wins,playerId:g.playerId};}});}catch(e2){console.error("Both goalie APIs failed:",e2);}}var enriched=0;var goalieNames=Object.keys(allGoalies);for(var i=0;i<goalieNames.length;i++){var gn=goalieNames[i];var g=allGoalies[gn];if(!g.playerId)continue;try{var detail=await fetch(API+"player/"+g.playerId+"/landing");var dd=await detail.json();if(dd.featuredStats&&dd.featuredStats.regularSeason){var sub=dd.featuredStats.regularSeason.subSeason||{};g.sv_pct_season=sub.savePctg||g.sv_pct;g.gaa_season=sub.goalsAgainstAvg||g.gaa;}var last5=dd.last5Games||[];if(last5.length>0){var totalSaves=0,totalShots=0;last5.forEach(function(gm){totalSaves+=(gm.savePctg||0)*(gm.shotsAgainst||0);totalShots+=(gm.shotsAgainst||0);});g.sv_pct_last5=totalShots>0?totalSaves/totalShots:null;}enriched++;}catch(e3){}if(enriched>=30)break;}var bc=new BroadcastChannel("nhl_goalie_sync");bc.postMessage({type:"nhl_goalie_stats",count:Object.keys(allGoalies).length,enriched:enriched,data:allGoalies});bc.close();console.log("NHL goalies synced:",Object.keys(allGoalies).length,"total,",enriched,"enriched with game logs");}run();}catch(err){var bc2=new BroadcastChannel("nhl_goalie_sync");bc2.postMessage({type:"nhl_goalie_error",message:err.message});bc2.close();}})();';
+// NHL Goalie Scraper — uses only api-web.nhle.com (same origin from nhl.com)
+// Step 1: Get all NHL team abbrevs from standings
+// Step 2: For each team, get roster to find goalie player IDs
+// Step 3: For each goalie, fetch /player/{id}/landing for featuredStats + last5Games
+const NHL_GOALIE_SCRAPER = [
+'(function(){',
+'var A="https://api-web.nhle.com/v1/";',
+'var out={};var enriched=0;',
+'async function go(){',
+  'try{',
+    'var sr=await fetch(A+"standings/now");',
+    'var sd=await sr.json();',
+    'var teams=[];',
+    '(sd.standings||[]).forEach(function(t){if(t.teamAbbrev)teams.push(t.teamAbbrev.default||t.teamAbbrev);});',
+    'console.log("Teams:",teams.length);',
+    'for(var ti=0;ti<teams.length;ti++){',
+      'try{',
+        'var rr=await fetch(A+"roster/"+teams[ti]+"/20252026");',
+        'var rd=await rr.json();',
+        'var goalies=rd.goalies||[];',
+        'for(var gi=0;gi<goalies.length;gi++){',
+          'var gid=goalies[gi].id;',
+          'var gname=goalies[gi].firstName.default+" "+goalies[gi].lastName.default;',
+          'try{',
+            'var pr=await fetch(A+"player/"+gid+"/landing");',
+            'var pd=await pr.json();',
+            'var fs=pd.featuredStats&&pd.featuredStats.regularSeason&&pd.featuredStats.regularSeason.subSeason||{};',
+            'var l5=pd.last5Games||[];',
+            'var sv5=null;',
+            'if(l5.length>0){var ts2=0,tsa=0;l5.forEach(function(gm){if(gm.savePctg!=null&&gm.shotsAgainst>0){ts2+=gm.savePctg*gm.shotsAgainst;tsa+=gm.shotsAgainst;}});if(tsa>0)sv5=ts2/tsa;}',
+            'out[gname]={sv_pct:fs.savePctg||null,gaa:fs.goalsAgainstAvg||null,games:fs.gamesPlayed||0,wins:fs.wins||0,sv_pct_last5:sv5,sv_pct_season:fs.savePctg||null,team:teams[ti],playerId:gid};',
+            'enriched++;',
+          '}catch(e3){console.warn("Skip goalie",gname,e3.message);}',
+        '}',
+      '}catch(e2){console.warn("Skip team",teams[ti]);}',
+    '}',
+    'var bc=new BroadcastChannel("nhl_goalie_sync");',
+    'bc.postMessage({type:"nhl_goalie_stats",count:Object.keys(out).length,enriched:enriched,data:out});',
+    'bc.close();',
+    'console.log("NHL goalies synced:",Object.keys(out).length,"goalies,",enriched,"with last-5 SV%");',
+  '}catch(err){',
+    'var bc2=new BroadcastChannel("nhl_goalie_sync");',
+    'bc2.postMessage({type:"nhl_goalie_error",message:err.message});',
+    'bc2.close();',
+    'console.error("NHL goalie sync failed:",err);',
+  '}',
+'}',
+'go();',
+'})();'
+].join('');
 
 function syncNHLGoalies() {
   const btn = document.getElementById('syncNHLGoalieBtn');
