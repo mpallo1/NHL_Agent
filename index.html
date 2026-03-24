@@ -183,8 +183,12 @@
             <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:4px">⚡ ESPN Auto-Fetch</div>
             <div style="font-size:11px;color:var(--text3);line-height:1.6">Slate, puck lines, team stats and goalie SV% load automatically.</div>
           </div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn-sm primary" id="autoFetchBtn" onclick="autoFetchESPN()">⟳ Refresh Now</button>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="date" id="slateDate" class="config-input" style="max-width:160px;font-size:12px;padding:6px 8px">
+            <button class="btn-sm" onclick="shiftSlateDate(-1)" style="padding:6px 10px;min-height:32px">◀</button>
+            <button class="btn-sm" onclick="shiftSlateDate(1)" style="padding:6px 10px;min-height:32px">▶</button>
+            <button class="btn-sm" onclick="document.getElementById('slateDate').value=new Date().toISOString().slice(0,10);autoFetchESPN()" style="padding:6px 10px;min-height:32px">Today</button>
+            <button class="btn-sm primary" id="autoFetchBtn" onclick="autoFetchESPN()">⟳ Fetch Slate</button>
             <span id="autoFetchStatus" style="font-size:10px;font-family:var(--mono);color:var(--text3)">Loading...</span>
           </div>
         </div>
@@ -689,9 +693,20 @@ async function autoFetchESPN() {
   if (statusEl) { statusEl.textContent = 'Fetching...'; statusEl.style.color = 'var(--amber)'; }
 
   try {
-    // 1. Slate + lines
-    const today = new Date();
-    const dateStr = today.getFullYear().toString() + String(today.getMonth() + 1).padStart(2, '0') + String(today.getDate()).padStart(2, '0');
+    // 1. Slate + lines — use date picker or default to today
+    const dateInput = document.getElementById('slateDate');
+    let slateDate;
+    if (dateInput && dateInput.value) {
+      // Parse YYYY-MM-DD from input, avoid timezone shift by splitting
+      const parts = dateInput.value.split('-');
+      slateDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+    } else {
+      slateDate = new Date();
+      if (dateInput) dateInput.value = slateDate.toISOString().slice(0, 10);
+    }
+    const dateStr = slateDate.getFullYear().toString() + String(slateDate.getMonth() + 1).padStart(2, '0') + String(slateDate.getDate()).padStart(2, '0');
+    const dateLabel = slateDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    addLog('Fetching slate for ' + dateLabel + ' (' + dateStr + ')', 'info');
     const slateResp = await fetch('https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?dates=' + dateStr);
     const slateData = await slateResp.json();
     const events = slateData.events || [];
@@ -938,40 +953,68 @@ async function checkNHLGoalieCache() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// HOCKEY REFERENCE OPTIONAL SYNC
+// HOCKEY REFERENCE OPTIONAL SYNC — copy()+paste approach
 // ═══════════════════════════════════════════════════════════════════
 
-let _hrChannel = null;
-
-const HOCKEYREF_SCRAPER = '(function(){try{function parseTable(id){var t=document.getElementById(id);if(!t)return{};var rows=Array.from(t.querySelectorAll("tbody tr:not(.thead)"));var data={};rows.forEach(function(row){var teamCell=row.querySelector("[data-stat=\'team_name\'] a");var team=teamCell&&teamCell.textContent.trim();if(!team)return;var obj={};Array.from(row.querySelectorAll("td,th")).forEach(function(cell){var stat=cell.getAttribute("data-stat");if(stat&&stat!=="team_name")obj[stat]=cell.textContent.trim();});data[team]=obj;});return data;}var stats=parseTable("stats");var adv=parseTable("stats_adv");var merged={};var allTeams=new Set(Object.keys(stats).concat(Object.keys(adv)));allTeams.forEach(function(team){var s=stats[team]||{};var a=adv[team]||{};var xgFor=parseFloat(a.exp_on_goals_for)||0;var xgAgainst=parseFloat(a.exp_on_goals_against)||0;merged[team]={pp_pct:parseFloat(s.power_play_pct)||null,pk_pct:parseFloat(s.pen_kill_pct)||null,sv_pct:parseFloat(s.save_pct)||null,sh_pct:parseFloat(s.shot_pct)||null,gf_pg:parseFloat(s.goals_for_per_game)||null,ga_pg:parseFloat(s.goals_against_per_game)||null,xgf_pct:xgFor+xgAgainst>0?(xgFor/(xgFor+xgAgainst)*100):null,cf_pct:parseFloat(a.corsi_pct_5on5)||null,hdcf_pct:parseFloat(a.hdsc_for_pct)||null,pdo:parseFloat(a.pdo)||null,xgf_for:xgFor||null,xgf_against:xgAgainst||null};});var bc=new BroadcastChannel("hockeyref_sync");bc.postMessage({type:"hockeyref_stats",count:Object.keys(merged).length,data:merged});bc.close();console.log("Hockey Reference synced:",Object.keys(merged).length,"teams");}catch(err){var bc2=new BroadcastChannel("hockeyref_sync");bc2.postMessage({type:"hockeyref_error",message:err.message});bc2.close();}})();';
+const HOCKEYREF_SCRAPER = '(function(){try{function parseTable(id){var t=document.getElementById(id);if(!t)return{};var rows=Array.from(t.querySelectorAll("tbody tr:not(.thead)"));var data={};rows.forEach(function(row){var teamCell=row.querySelector("[data-stat=\'team_name\'] a");var team=teamCell&&teamCell.textContent.trim();if(!team)return;var obj={};Array.from(row.querySelectorAll("td,th")).forEach(function(cell){var stat=cell.getAttribute("data-stat");if(stat&&stat!=="team_name")obj[stat]=cell.textContent.trim();});data[team]=obj;});return data;}var stats=parseTable("stats");var adv=parseTable("stats_adv");var merged={};var allTeams=new Set(Object.keys(stats).concat(Object.keys(adv)));allTeams.forEach(function(team){var s=stats[team]||{};var a=adv[team]||{};var xgFor=parseFloat(a.exp_on_goals_for)||0;var xgAgainst=parseFloat(a.exp_on_goals_against)||0;merged[team]={pp_pct:parseFloat(s.power_play_pct)||null,pk_pct:parseFloat(s.pen_kill_pct)||null,sv_pct:parseFloat(s.save_pct)||null,sh_pct:parseFloat(s.shot_pct)||null,gf_pg:parseFloat(s.goals_for_per_game)||null,ga_pg:parseFloat(s.goals_against_per_game)||null,xgf_pct:xgFor+xgAgainst>0?(xgFor/(xgFor+xgAgainst)*100):null,cf_pct:parseFloat(a.corsi_pct_5on5)||null,hdcf_pct:parseFloat(a.hdsc_for_pct)||null,pdo:parseFloat(a.pdo)||null,xgf_for:xgFor||null,xgf_against:xgAgainst||null};});var payload=JSON.stringify({type:"hockeyref_stats",count:Object.keys(merged).length,data:merged});if(typeof copy==="function"){copy(payload);console.log("✅ DONE! "+Object.keys(merged).length+" teams copied to clipboard. Paste into Line Scout.");}else{console.log("✅ DONE! Right-click below → Copy string contents:");console.log(payload);}}catch(err){console.error("❌ Failed:",err.message);}})();';
 
 function syncHockeyReference() {
   const btn = document.getElementById('syncHRBtn');
   const status = document.getElementById('hrSyncStatus');
   const advEl = document.getElementById('fetchAdvStatus');
-  btn.disabled = true; btn.textContent = '⏳ Waiting...';
 
-  if (_hrChannel) { _hrChannel.close(); _hrChannel = null; }
-  _hrChannel = new BroadcastChannel('hockeyref_sync');
-  _hrChannel.onmessage = async function (e) {
-    _hrChannel.close(); _hrChannel = null;
-    btn.disabled = false; btn.textContent = '⟳ Sync Hockey Ref';
-    document.getElementById('hrScriptBox')?.remove();
-    if (e.data && e.data.type === 'hockeyref_error') {
-      status.textContent = '✗ ' + e.data.message; status.style.color = 'var(--red)';
-      addLog('Hockey Ref error: ' + e.data.message, 'err'); return;
+  const card = btn.closest('.card') || btn.closest('div[style]') || btn.parentElement;
+  document.getElementById('hrScriptBox')?.remove();
+  const box = document.createElement('div');
+  box.id = 'hrScriptBox';
+  box.style.cssText = 'margin-top:12px;background:var(--surface2);border:1px solid var(--green);border-radius:6px;padding:14px;';
+  box.innerHTML =
+    '<div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:8px">📊 Hockey Reference Sync — 4 steps</div>' +
+    '<div style="font-size:11px;color:var(--text2);line-height:1.9;margin-bottom:10px">' +
+    '<strong style="color:var(--text)">1.</strong> Open <a href="https://www.hockey-reference.com/leagues/NHL_2026.html" target="_blank" style="color:var(--blue)">hockey-reference.com/leagues/NHL_2026.html</a> in Chrome<br>' +
+    '<strong style="color:var(--text)">2.</strong> Press <kbd style="background:var(--border2);padding:1px 5px;border-radius:3px">F12</kbd> → Console → paste script below → Enter<br>' +
+    '<strong style="color:var(--text)">3.</strong> Wait for "✅ DONE!" — data auto-copies to clipboard<br>' +
+    '<strong style="color:var(--text)">4.</strong> Come back here → paste into box below → click Load</div>' +
+    '<div style="position:relative;margin-bottom:10px">' +
+    '<textarea id="hrScriptBox_ta" readonly style="width:100%;height:52px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--border2);border-radius:4px;padding:8px;resize:none;line-height:1.4;word-break:break-all">' + HOCKEYREF_SCRAPER + '</textarea>' +
+    '<button onclick="var ta=document.getElementById(\'hrScriptBox_ta\');ta.select();document.execCommand(\'copy\');this.textContent=\'✓ Copied!\';this.style.color=\'var(--green)\';var s=this;setTimeout(function(){s.textContent=\'Copy Script\';s.style.color=\'\';},2000);" style="position:absolute;top:6px;right:6px;font-family:var(--sans);font-size:10px;font-weight:600;padding:4px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--surface);color:var(--text2);cursor:pointer">Copy Script</button></div>' +
+    '<div style="font-size:11px;font-weight:600;color:var(--amber);margin-bottom:6px">📋 Paste HR data here:</div>' +
+    '<textarea id="hrPasteBox" style="width:100%;height:60px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--amber);border-radius:4px;padding:8px;resize:none" placeholder="Run script on hockey-reference.com, then Ctrl+V here..."></textarea>' +
+    '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+    '<button onclick="processHRPaste()" class="btn-sm primary">⚡ Load HR Data</button>' +
+    '<button onclick="document.getElementById(\'hrScriptBox\').remove();" class="btn-sm">✕ Cancel</button>' +
+    '<span id="hrPasteStatus" style="font-size:10px;font-family:var(--mono);color:var(--text3)"></span></div>';
+  card.appendChild(box);
+  status.textContent = 'Awaiting paste...'; status.style.color = 'var(--amber)';
+}
+
+async function processHRPaste() {
+  const pasteBox = document.getElementById('hrPasteBox');
+  const status = document.getElementById('hrSyncStatus');
+  const advEl = document.getElementById('fetchAdvStatus');
+  const pasteStatus = document.getElementById('hrPasteStatus');
+  const raw = (pasteBox?.value || '').trim();
+  if (!raw) { pasteStatus.textContent = '✗ Paste box is empty'; pasteStatus.style.color = 'var(--red)'; return; }
+  try {
+    const payload = JSON.parse(raw);
+    if (payload.type !== 'hockeyref_stats' || !payload.data) {
+      pasteStatus.textContent = '✗ Invalid format'; pasteStatus.style.color = 'var(--red)'; return;
     }
-    if (!e.data || e.data.type !== 'hockeyref_stats') return;
-    _hrAdvStats = e.data.data;
+    _hrAdvStats = payload.data;
     _hrSyncDate = new Date().toDateString();
-    try { await store.set('hr_stats_' + _hrSyncDate, JSON.stringify(e.data.data)); } catch (err) {}
+    try { await store.set('hr_stats_' + _hrSyncDate, JSON.stringify(payload.data)); } catch (err) {}
     buildNHLStatsCache();
-    status.textContent = '✓ ' + e.data.count + ' teams'; status.style.color = 'var(--green)';
-    if (advEl) { advEl.textContent = '✓ HR: ' + e.data.count; advEl.style.color = 'var(--green)'; }
-    addLog('Hockey Reference: ' + e.data.count + ' teams synced', 'ok');
-  };
-  showConsoleScript('hrScriptBox', 'Hockey Reference Advanced Stats',
-    'https://www.hockey-reference.com/leagues/NHL_2026.html', HOCKEYREF_SCRAPER, status, btn, '⟳ Sync Hockey Ref');
+    const count = payload.count || Object.keys(payload.data).length;
+    status.textContent = '✓ ' + count + ' teams — xGF%, CF%, HDCF%, PDO active';
+    status.style.color = 'var(--green)';
+    if (advEl) { advEl.textContent = '✓ HR: ' + count; advEl.style.color = 'var(--green)'; }
+    pasteStatus.textContent = '✓ Loaded!'; pasteStatus.style.color = 'var(--green)';
+    addLog('Hockey Reference: ' + count + ' teams synced', 'ok');
+    document.getElementById('hrScriptBox')?.remove();
+  } catch (e) {
+    pasteStatus.textContent = '✗ JSON parse error: ' + e.message; pasteStatus.style.color = 'var(--red)';
+    addLog('HR paste error: ' + e.message, 'err');
+  }
 }
 
 async function checkStatsCache() {
@@ -992,25 +1035,7 @@ async function checkStatsCache() {
   }
 }
 
-function showConsoleScript(boxId, label, siteUrl, script, statusEl, btn, btnText) {
-  document.getElementById(boxId)?.remove();
-  const box = document.createElement('div');
-  box.id = boxId;
-  box.style.cssText = 'margin-top:12px;background:var(--surface2);border:1px solid var(--green);border-radius:6px;padding:14px;';
-  const safeScript = script.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  box.innerHTML = '<div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:8px">📋 ' + label + ' — 3 steps</div>' +
-    '<div style="font-size:11px;color:var(--text2);line-height:1.9;margin-bottom:10px">' +
-    '<strong style="color:var(--text)">1.</strong> Open <a href="' + siteUrl + '" target="_blank" style="color:var(--blue)">' + siteUrl + '</a> in Chrome<br>' +
-    '<strong style="color:var(--text)">2.</strong> Press <kbd style="background:var(--border2);padding:1px 5px;border-radius:3px">F12</kbd> → Console → paste script → Enter<br>' +
-    '<strong style="color:var(--text)">3.</strong> Data appears here automatically ✓</div>' +
-    '<div style="position:relative">' +
-    '<textarea id="' + boxId + '_ta" readonly style="width:100%;height:52px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--border2);border-radius:4px;padding:8px;resize:none;line-height:1.4;word-break:break-all">' + script + '</textarea>' +
-    '<button onclick="var ta=document.getElementById(\'' + boxId + '_ta\');ta.select();document.execCommand(\'copy\');this.textContent=\'✓ Copied!\';this.style.color=\'var(--green)\';var s=this;setTimeout(function(){s.textContent=\'Copy\';s.style.color=\'\';},2000);" style="position:absolute;top:6px;right:6px;font-family:var(--sans);font-size:10px;font-weight:600;padding:4px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--surface);color:var(--text2);cursor:pointer">Copy</button></div>' +
-    '<div style="margin-top:8px;font-size:10px;font-family:var(--mono);color:var(--text3)">⏳ Listening... <button onclick="document.getElementById(\'' + boxId + '\').remove();" style="margin-left:8px;font-family:var(--sans);font-size:10px;padding:2px 8px;border-radius:3px;border:1px solid var(--border2);background:transparent;color:var(--text3);cursor:pointer">✕ Cancel</button></div>';
-  const card = btn.closest('.card') || btn.parentElement;
-  card.appendChild(box);
-  statusEl.textContent = '⏳ Awaiting paste...'; statusEl.style.color = 'var(--amber)';
-}
+// showConsoleScript removed — all syncs now use copy()+paste pattern
 
 // ═══════════════════════════════════════════════════════════════════
 // CORE FORMULA v3
@@ -1333,6 +1358,15 @@ function clearSlate() {
   document.getElementById('slateInput').value = '';
   _espnRawGames = [];
   document.getElementById('slateStatus').textContent = 'Cleared';
+}
+
+function shiftSlateDate(days) {
+  const input = document.getElementById('slateDate');
+  const parts = (input.value || new Date().toISOString().slice(0, 10)).split('-');
+  const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  d.setDate(d.getDate() + days);
+  input.value = d.toISOString().slice(0, 10);
+  autoFetchESPN();
 }
 
 function parseSlateText(text) {
@@ -1769,33 +1803,59 @@ async function loadArchiveDay(dateStr) {
   } catch (e) { archiveContainer.innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div>' + e.message + '</div>'; }
 }
 
-// ESPN Results scraper
-const ESPN_RESULTS_SCRAPER = '(function(){try{var evts=window.__espnfitt__&&window.__espnfitt__.page&&window.__espnfitt__.page.content&&window.__espnfitt__.page.content.scoreboard&&window.__espnfitt__.page.content.scoreboard.evts||[];var results=evts.map(function(e){var comps=e.competitors||[];var home=comps.find(function(c){return c.isHome;})||comps[1]||{};var away=comps.find(function(c){return !c.isHome;})||comps[0]||{};return{id:e.id,away:away.displayName||"?",awayScore:away.score!=null?Number(away.score):null,home:home.displayName||"?",homeScore:home.score!=null?Number(home.score):null,state:e.status&&e.status.state};});var bc=new BroadcastChannel("espn_results");bc.postMessage({type:"espn_results",data:results});bc.close();console.log("ESPN results sent:",results.filter(function(r){return r.state==="post";}).length,"final");}catch(err){var bc=new BroadcastChannel("espn_results");bc.postMessage({type:"espn_results_error",message:err.message});bc.close();}})();';
-
-let _resultsChannel = null;
+// ESPN Results scraper — copy()+paste approach
+const ESPN_RESULTS_SCRAPER = '(function(){try{var evts=window.__espnfitt__&&window.__espnfitt__.page&&window.__espnfitt__.page.content&&window.__espnfitt__.page.content.scoreboard&&window.__espnfitt__.page.content.scoreboard.evts||[];var results=evts.map(function(e){var comps=e.competitors||[];var home=comps.find(function(c){return c.isHome;})||comps[1]||{};var away=comps.find(function(c){return !c.isHome;})||comps[0]||{};return{id:e.id,away:away.displayName||"?",awayScore:away.score!=null?Number(away.score):null,home:home.displayName||"?",homeScore:home.score!=null?Number(home.score):null,state:e.status&&e.status.state};});var payload=JSON.stringify({type:"espn_results",data:results});if(typeof copy==="function"){copy(payload);console.log("✅ DONE! "+results.filter(function(r){return r.state==="post";}).length+" final games copied. Paste into Line Scout.");}else{console.log("✅ DONE! Right-click below → Copy string contents:");console.log(payload);}}catch(err){console.error("❌ Failed:",err.message);}})();';
 
 function fetchResults() {
   const dateStr = window.__currentArchiveDate;
   if (!dateStr) { addLog('Select an archive date first', 'warn'); return; }
   const btn = document.getElementById('fetchResultsBtn');
   const status = document.getElementById('fetchResultsStatus');
-  btn.disabled = true; btn.textContent = '⏳ Waiting...';
-  if (_resultsChannel) { _resultsChannel.close(); _resultsChannel = null; }
-  _resultsChannel = new BroadcastChannel('espn_results');
-  _resultsChannel.onmessage = async function (e) {
-    _resultsChannel.close(); _resultsChannel = null;
-    btn.disabled = false; btn.textContent = '📡 Fetch from ESPN';
-    document.getElementById('resultsScriptBox')?.remove();
-    if (e.data?.type === 'espn_results_error') {
-      status.textContent = '✗ ' + e.data.message; status.style.color = 'var(--red)'; return;
+
+  const card = btn.closest('.card') || btn.parentElement;
+  document.getElementById('resultsScriptBox')?.remove();
+  const box = document.createElement('div');
+  box.id = 'resultsScriptBox';
+  box.style.cssText = 'margin-top:12px;background:var(--surface2);border:1px solid var(--green);border-radius:6px;padding:14px;';
+  box.innerHTML =
+    '<div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:8px">📡 ESPN Results Sync — 4 steps</div>' +
+    '<div style="font-size:11px;color:var(--text2);line-height:1.9;margin-bottom:10px">' +
+    '<strong style="color:var(--text)">1.</strong> Open <a href="https://www.espn.com/nhl/scoreboard" target="_blank" style="color:var(--blue)">espn.com/nhl/scoreboard</a> for the correct date<br>' +
+    '<strong style="color:var(--text)">2.</strong> Press <kbd style="background:var(--border2);padding:1px 5px;border-radius:3px">F12</kbd> → Console → paste script below → Enter<br>' +
+    '<strong style="color:var(--text)">3.</strong> Wait for "✅ DONE!" — results copy to clipboard<br>' +
+    '<strong style="color:var(--text)">4.</strong> Come back here → paste into box below → click Load Results</div>' +
+    '<div style="position:relative;margin-bottom:10px">' +
+    '<textarea id="resultsScriptBox_ta" readonly style="width:100%;height:52px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--border2);border-radius:4px;padding:8px;resize:none;line-height:1.4;word-break:break-all">' + ESPN_RESULTS_SCRAPER + '</textarea>' +
+    '<button onclick="var ta=document.getElementById(\'resultsScriptBox_ta\');ta.select();document.execCommand(\'copy\');this.textContent=\'✓ Copied!\';this.style.color=\'var(--green)\';var s=this;setTimeout(function(){s.textContent=\'Copy Script\';s.style.color=\'\';},2000);" style="position:absolute;top:6px;right:6px;font-family:var(--sans);font-size:10px;font-weight:600;padding:4px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--surface);color:var(--text2);cursor:pointer">Copy Script</button></div>' +
+    '<div style="font-size:11px;font-weight:600;color:var(--amber);margin-bottom:6px">📋 Paste ESPN results here:</div>' +
+    '<textarea id="resultsPasteBox" style="width:100%;height:60px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--amber);border-radius:4px;padding:8px;resize:none" placeholder="Run script on espn.com/nhl/scoreboard, then Ctrl+V here..."></textarea>' +
+    '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+    '<button onclick="processResultsPaste(\'' + dateStr + '\')" class="btn-sm primary">⚡ Load Results</button>' +
+    '<button onclick="document.getElementById(\'resultsScriptBox\').remove();" class="btn-sm">✕ Cancel</button>' +
+    '<span id="resultsPasteStatus" style="font-size:10px;font-family:var(--mono);color:var(--text3)"></span></div>';
+  card.appendChild(box);
+  status.textContent = 'Awaiting paste...'; status.style.color = 'var(--amber)';
+}
+
+async function processResultsPaste(dateStr) {
+  const pasteBox = document.getElementById('resultsPasteBox');
+  const status = document.getElementById('fetchResultsStatus');
+  const pasteStatus = document.getElementById('resultsPasteStatus');
+  const raw = (pasteBox?.value || '').trim();
+  if (!raw) { pasteStatus.textContent = '✗ Paste box is empty'; pasteStatus.style.color = 'var(--red)'; return; }
+  try {
+    const payload = JSON.parse(raw);
+    if (payload.type !== 'espn_results' || !payload.data) {
+      pasteStatus.textContent = '✗ Invalid format'; pasteStatus.style.color = 'var(--red)'; return;
     }
-    if (e.data?.type !== 'espn_results') return;
-    status.textContent = '⟳ Matching...'; status.style.color = 'var(--amber)';
-    await applyESPNResults(dateStr, e.data.data || []);
-    status.textContent = '✓ Applied'; status.style.color = 'var(--green)';
-  };
-  showConsoleScript('resultsScriptBox', 'ESPN Results', 'https://www.espn.com/nhl/scoreboard',
-    ESPN_RESULTS_SCRAPER, status, btn, '📡 Fetch from ESPN');
+    await applyESPNResults(dateStr, payload.data);
+    pasteStatus.textContent = '✓ Applied!'; pasteStatus.style.color = 'var(--green)';
+    status.textContent = '✓ Results loaded'; status.style.color = 'var(--green)';
+    document.getElementById('resultsScriptBox')?.remove();
+  } catch (e) {
+    pasteStatus.textContent = '✗ JSON parse error: ' + e.message; pasteStatus.style.color = 'var(--red)';
+    addLog('Results paste error: ' + e.message, 'err');
+  }
 }
 
 async function applyESPNResults(dateStr, espnResults) {
@@ -2008,6 +2068,9 @@ async function renderHistoryFromStorage() { await refreshArchivePicker(); update
 (async () => {
   try {
     addLog('NHL Line Scout v2 initialized. Fetching data...', 'ok');
+    // Set date picker to today
+    const dateInput = document.getElementById('slateDate');
+    if (dateInput) dateInput.value = new Date().toISOString().slice(0, 10);
     const cfg = await loadConfig();
     addLog('EV threshold: ' + cfg.evThreshold + 'g | Totals: ' + cfg.totalsThreshold + 'g | Max plays: ' + cfg.maxPlays, 'info');
     initWeightEditor();
