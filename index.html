@@ -160,6 +160,13 @@
   .tag-r { background: var(--red-dim); color: var(--red); }
   .tag-n { background: var(--surface2); color: var(--text3); }
 
+  .game-card table tbody tr td {
+    padding: 5px 0; border-bottom: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px; font-weight: 400;
+  }
+  .game-card table tbody tr:last-child td { border-bottom: none; }
+  .game-card table tbody tr:hover td { background: rgba(255,255,255,0.02); }
+
   .analysis-block {
     background: var(--surface2); border-radius: var(--radius-sm);
     padding: 12px 14px; font-size: 12px; color: var(--text2);
@@ -1810,52 +1817,130 @@ function renderGames(games, picks, cfg) {
       ? '<span class="tag ' + (g.totals_lean === 'OVER' ? 'tag-h' : 'tag-c') + '" style="font-size:9px">' + g.totals_lean + ' ' + g.projected_total + ' (mkt ' + (g.market_total || '?') + ')</span>' : '';
     const goalieTierBadge = '<span class="tag ' + (g.goalie_tier === 2 ? 'tag-c' : 'tag-n') + '" style="font-size:9px">🥅 T' + (g.goalie_tier || 1) + '</span>';
 
-    const divisionalBadge = g.is_divisional ? '<span class="tag tag-c" style="font-size:9px">📍 DIV</span>' : '';
-    const paceBadge = g.pace_multiplier && g.pace_multiplier !== 1.00
-      ? '<span class="tag ' + (g.pace_multiplier > 1.03 ? 'tag-h' : g.pace_multiplier < 0.97 ? 'tag-c' : 'tag-n') + '" style="font-size:9px">Pace ' + g.pace_multiplier + 'x</span>' : '';
-
-    const starterBadge = function (starter) {
-      if (!starter || !starter.name) return '<span style="font-size:9px;font-family:var(--mono);color:var(--text3)">—</span>';
-      const confColor = { confirmed: 'var(--green)', Confirmed: 'var(--green)', expected: 'var(--amber)', unconfirmed: 'var(--text3)' }[starter.confidence] || 'var(--text3)';
-      const svStr = starter.sv_pct ? (' · ' + (parseFloat(starter.sv_pct) * 100).toFixed(1) + '%') : '';
-      return '<span style="font-size:10px;font-family:var(--mono);color:' + confColor + '">' + starter.name + svStr + '</span>' +
-        '<span style="font-size:9px;font-family:var(--mono);color:var(--text3);margin-left:4px">(' + (starter.confidence || '?') + ')</span>';
+    const starterInfo = function (starter, teamStats, goalieCache) {
+      if (!starter || !starter.name) return { name: '—', sv: '—', gsax: '—', conf: 'unknown', confColor: 'var(--text3)' };
+      const confColor = { confirmed: 'var(--green)', Confirmed: 'var(--green)', expected: 'var(--amber)', unconfirmed: 'var(--text3)', projected: 'var(--amber)' }[starter.confidence] || 'var(--text3)';
+      const sv = starter.sv_pct ? (parseFloat(starter.sv_pct) * 100).toFixed(1) : '—';
+      // Try to get GSAx from cache
+      let gsax = '—';
+      if (starter.name && _nhlGoalieCache && _nhlGoalieCache[starter.name]) {
+        const ng = _nhlGoalieCache[starter.name];
+        const svVal = ng.sv_pct_last5 || ng.sv_pct || 0;
+        const sa = parseFloat(teamStats.shots_against_pg) || 28.5;
+        gsax = ((svVal - 0.905) * sa).toFixed(2);
+      }
+      return { name: starter.name, sv: sv, gsax: gsax, conf: starter.confidence || '?', confColor: confColor };
     };
 
-    const factors = (g.key_factors || []).slice(0, 5).map(function (f) { return '<span class="tag tag-c">' + f + '</span>'; }).join('');
+    const awayG = starterInfo(g.away_starter, g.stats || {}, _nhlGoalieCache);
+    const homeG = starterInfo(g.home_starter, g.stats || {}, _nhlGoalieCache);
+
+    const pctFmt = function (v) { return v != null ? parseFloat(v).toFixed(1) + '%' : '—'; };
     const svFmt = function (v) { return v ? parseFloat(v).toFixed(3) : '—'; };
-    const pctFmt = function (v) { return v ? parseFloat(v).toFixed(1) + '%' : '—'; };
     const luckFmt = function (v) { return v != null ? (v > 0 ? '+' : '') + v + '%' : '—'; };
 
+    // Build richer analysis narrative
+    const comps = g.components || {};
+    const rd = g.key_factors || [];
+    let narrative = '';
+    // Opening: matchup context
+    if (g.is_divisional) narrative += 'Divisional matchup — expect a tight, physical game. ';
+    // Goalie matchup sentence
+    if (awayG.name !== '—' && homeG.name !== '—') {
+      narrative += awayG.name + ' (SV% ' + awayG.sv + ', GSAx/gm ' + awayG.gsax + ') faces ' + homeG.name + ' (SV% ' + homeG.sv + ', GSAx/gm ' + homeG.gsax + '). ';
+    }
+    // Edge explanation
+    if (g.verdict === 'EV_FAV') {
+      narrative += 'Model sees ' + Math.abs(g.edge_pts).toFixed(2) + 'g edge for the favorite — ';
+      if (Math.abs(comps.goalie || 0) > Math.abs(comps.base || 0)) narrative += 'goaltending is the primary driver. ';
+      else narrative += 'team quality (xGF%) is the primary driver. ';
+    } else if (g.verdict === 'EV_DOG') {
+      narrative += 'Model finds ' + Math.abs(g.edge_pts).toFixed(2) + 'g of value on the underdog — ';
+      if (Math.abs(comps.gsax || 0) > 0.1) narrative += 'the dog\'s goalie is outperforming expectations. ';
+      else narrative += 'the market is overpricing the favorite. ';
+    }
+    // Totals context
+    if (g.totals_lean && g.totals_lean !== 'PASS') {
+      narrative += 'Projected total ' + g.projected_total + ' goals vs market ' + (g.market_total || '?');
+      if (g.pace_multiplier && g.pace_multiplier !== 1.00) narrative += ' (pace ' + g.pace_multiplier + 'x)';
+      narrative += ' — lean ' + g.totals_lean + '. ';
+    }
+    // PDO warning
+    if (g.pdo_flag) {
+      narrative += '⚠ ' + (g.pdo_flag === 'fav_high_pdo' ? 'Favorite' : 'Underdog') + ' has elevated PDO — regression risk. ';
+    }
+
+    // Stat comparison row helper
+    function statRow(label, awayVal, homeVal, highlight) {
+      const aColor = highlight === 'away' ? 'color:var(--green)' : highlight === 'home' ? 'color:var(--red)' : '';
+      const hColor = highlight === 'home' ? 'color:var(--green)' : highlight === 'away' ? 'color:var(--red)' : '';
+      return '<tr>' +
+        '<td style="' + aColor + '">' + awayVal + '</td>' +
+        '<td style="color:var(--text3);text-align:center;font-size:10px">' + label + '</td>' +
+        '<td style="text-align:right;' + hColor + '">' + homeVal + '</td></tr>';
+    }
+    function betterSide(a, h, higher) {
+      const av = parseFloat(a), hv = parseFloat(h);
+      if (isNaN(av) || isNaN(hv)) return '';
+      if (higher === undefined) higher = true;
+      return (higher ? av > hv : av < hv) ? 'away' : (higher ? hv > av : hv < av) ? 'home' : '';
+    }
+
     html += '<div class="game-card ' + vc + (isPick ? ' is-pick' : '') + '">' +
+      // ── Header: Teams + Lines ──
       '<div class="game-top">' +
       '<div class="game-teams">' +
       '<div class="team-row">' + g.away + '</div>' +
-      '<div class="team-row">' + g.home + '</div>' +
-      '<div class="game-meta">' + (g.time || '') + ' · ' + (g.neutral_site ? 'Neutral' : g.isPlayoffs ? 'Playoffs' : 'Home/Away') + '</div>' +
+      '<div class="team-row" style="color:var(--text2)">@ ' + g.home + '</div>' +
+      '<div class="game-meta">' + (g.time || '') + (g.is_divisional ? ' · Division' : '') + (g.isPlayoffs ? ' · Playoffs' : '') + '</div>' +
       '</div>' +
       '<div class="game-lines">' +
-      '<div class="model-line">Model: ' + (g.model_spread || '—') + '</div>' +
-      '<div class="mkt-line">Mkt: ' + (g.market_spread || '—') + ' · O/U ' + (g.market_total || '—') + '</div>' +
+      '<div class="model-line">' + (g.model_spread || '—') + '</div>' +
+      '<div class="mkt-line">Market ' + (g.market_spread || '—') + ' · O/U ' + (g.market_total || '—') + '</div>' +
       '<div><span class="ev-badge ' + badgeClass + '">' + badgeText + '</span></div>' +
-      (isPick ? '<div style="margin-top:6px;font-size:10px;font-family:var(--mono);color:var(--green)">✓ PLAY: ' + g.play + '</div>' : '') +
+      (isPick ? '<div style="margin-top:8px;font-size:11px;font-family:var(--mono);font-weight:600;color:var(--green)">✓ ' + g.play + '</div>' : '') +
       '</div></div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:7px 10px">' +
-      '<div><div style="font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px">Away Starter</div>' + starterBadge(g.away_starter) + '</div>' +
-      '<div><div style="font-size:9px;font-family:var(--mono);color:var(--text3);letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px">Home Starter</div>' + starterBadge(g.home_starter) + '</div>' +
+
+      // ── Goalie Matchup Bar ──
+      '<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:0;margin-bottom:12px;background:var(--surface2);border-radius:var(--radius-sm);padding:10px 14px;align-items:center">' +
+      '<div>' +
+        '<div style="font-size:12px;font-weight:600;color:' + awayG.confColor + '">' + awayG.name + '</div>' +
+        '<div style="font-size:10px;font-family:var(--mono);color:var(--text3);margin-top:2px">SV% ' + awayG.sv + ' · GSAx ' + awayG.gsax + ' · <span style="color:' + awayG.confColor + '">' + awayG.conf + '</span></div>' +
       '</div>' +
-      '<div class="stat-grid">' +
-      '<div class="stat-cell"><div class="stat-name">xGF%</div><div class="stat-val"><span class="stat-adv ' + aXGF + '">' + pctFmt(st.away_xgf) + '</span>/<span class="stat-adv ' + hXGF + '">' + pctFmt(st.home_xgf) + '</span></div></div>' +
-      '<div class="stat-cell"><div class="stat-name">HDCF%</div><div class="stat-val"><span class="stat-adv ' + aHD + '">' + pctFmt(st.away_hdcf) + '</span>/<span class="stat-adv ' + hHD + '">' + pctFmt(st.home_hdcf) + '</span></div></div>' +
-      '<div class="stat-cell"><div class="stat-name">SV%</div><div class="stat-val"><span class="stat-adv ' + aSV + '">' + svFmt(st.away_sv) + '</span>/<span class="stat-adv ' + hSV + '">' + svFmt(st.home_sv) + '</span></div></div>' +
-      '<div class="stat-cell"><div class="stat-name">PP%</div><div class="stat-val"><span class="stat-adv ' + aPP + '">' + pctFmt(st.away_pp) + '</span>/<span class="stat-adv ' + hPP + '">' + pctFmt(st.home_pp) + '</span></div></div>' +
-      '<div class="stat-cell"><div class="stat-name">PK%</div><div class="stat-val"><span class="stat-adv ' + aPK + '">' + pctFmt(st.away_pk) + '</span>/<span class="stat-adv ' + hPK + '">' + pctFmt(st.home_pk) + '</span></div></div>' +
-      '<div class="stat-cell"><div class="stat-name">PDO</div><div class="stat-val">' + (st.away_pdo || '—') + '/' + (st.home_pdo || '—') + '</div></div>' +
-      '<div class="stat-cell"><div class="stat-name">Luck Δ</div><div class="stat-val">' + luckFmt(st.away_luck) + '/' + luckFmt(st.home_luck) + '</div></div>' +
-      '<div class="stat-cell"><div class="stat-name">Proj Total</div><div class="stat-val" style="color:' + (g.totals_lean === 'OVER' ? 'var(--amber)' : g.totals_lean === 'UNDER' ? 'var(--blue)' : 'var(--text)') + '">' + (g.projected_total || '—') + '</div></div>' +
+      '<div style="font-size:10px;font-family:var(--mono);color:var(--text3);padding:0 16px;text-align:center">vs</div>' +
+      '<div style="text-align:right">' +
+        '<div style="font-size:12px;font-weight:600;color:' + homeG.confColor + '">' + homeG.name + '</div>' +
+        '<div style="font-size:10px;font-family:var(--mono);color:var(--text3);margin-top:2px"><span style="color:' + homeG.confColor + '">' + homeG.conf + '</span> · GSAx ' + homeG.gsax + ' · SV% ' + homeG.sv + '</div>' +
       '</div>' +
-      ((factors || mlBadge || pdoBadge || totalsBadge || divisionalBadge || paceBadge) ? '<div class="tags" style="margin-bottom:8px">' + factors + goalieTierBadge + divisionalBadge + mlBadge + totalsBadge + paceBadge + pdoBadge + '</div>' : '') +
-      (g.analysis ? '<div class="analysis-block">' + g.analysis + '</div>' : '') +
+      '</div>' +
+
+      // ── Stat Comparison Table ──
+      '<table style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11px;font-weight:400;margin-bottom:12px">' +
+      '<thead><tr>' +
+        '<th style="text-align:left;font-size:9px;font-weight:500;color:var(--text3);padding:6px 0;letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid var(--border)">AWAY</th>' +
+        '<th style="text-align:center;font-size:9px;font-weight:500;color:var(--text3);padding:6px 0;letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid var(--border)">STAT</th>' +
+        '<th style="text-align:right;font-size:9px;font-weight:500;color:var(--text3);padding:6px 0;letter-spacing:.06em;text-transform:uppercase;border-bottom:1px solid var(--border)">HOME</th>' +
+      '</tr></thead><tbody style="color:var(--text2)">' +
+      statRow('xGF%', pctFmt(st.away_xgf), pctFmt(st.home_xgf), betterSide(st.away_xgf, st.home_xgf)) +
+      statRow('HDCF%', pctFmt(st.away_hdcf), pctFmt(st.home_hdcf), betterSide(st.away_hdcf, st.home_hdcf)) +
+      statRow('SV%', svFmt(st.away_sv), svFmt(st.home_sv), betterSide(st.away_sv, st.home_sv)) +
+      statRow('PP%', pctFmt(st.away_pp), pctFmt(st.home_pp), betterSide(st.away_pp, st.home_pp)) +
+      statRow('PK%', pctFmt(st.away_pk), pctFmt(st.home_pk), betterSide(st.away_pk, st.home_pk)) +
+      statRow('PDO', st.away_pdo || '—', st.home_pdo || '—', betterSide(st.away_pdo, st.home_pdo, false)) +
+      statRow('Luck Δ', luckFmt(st.away_luck), luckFmt(st.home_luck), '') +
+      '</tbody></table>' +
+
+      // ── Totals + Pace Row ──
+      '<div style="display:flex;gap:16px;margin-bottom:12px;font-family:var(--mono);font-size:11px;color:var(--text2);flex-wrap:wrap">' +
+      '<span>Proj Total: <strong style="color:' + (g.totals_lean === 'OVER' ? 'var(--amber)' : g.totals_lean === 'UNDER' ? 'var(--blue)' : 'var(--text)') + '">' + (g.projected_total || '—') + '</strong></span>' +
+      '<span>Market O/U: <strong>' + (g.market_total || '—') + '</strong></span>' +
+      (g.pace_multiplier ? '<span>Pace: <strong>' + g.pace_multiplier + 'x</strong></span>' : '') +
+      (g.totals_lean && g.totals_lean !== 'PASS' ? '<span style="color:' + (g.totals_lean === 'OVER' ? 'var(--amber)' : 'var(--blue)') + ';font-weight:600">' + g.totals_lean + ' (' + (g.totals_edge > 0 ? '+' : '') + g.totals_edge + 'g)</span>' : '') +
+      '</div>' +
+
+      // ── Analysis Narrative ──
+      (narrative ? '<div class="analysis-block">' + narrative.trim() + '</div>' : '') +
+
       '</div>';
   }
   container.innerHTML = html;
