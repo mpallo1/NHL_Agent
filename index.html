@@ -435,7 +435,7 @@
         <div style="display:flex;gap:8px;align-items:center">
           <span style="font-size:10px;font-family:var(--mono);color:var(--text3)" id="resultsDateLabel"></span>
           <span id="fetchResultsStatus" style="font-size:10px;font-family:var(--mono);color:var(--text3)"></span>
-          <button class="btn-sm primary" id="fetchResultsBtn" onclick="fetchResults()">📡 Fetch from ESPN</button>
+          <button class="btn-sm primary" id="fetchResultsBtn" onclick="fetchResults()">📡 Fetch Results</button>
         </div>
       </div>
       <div id="resultsEntryContainer"><div style="font-size:11px;color:var(--text3)">Select a date above to view and fetch results.</div></div>
@@ -2033,59 +2033,53 @@ async function loadArchiveDay(dateStr) {
   } catch (e) { archiveContainer.innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div>' + e.message + '</div>'; }
 }
 
-// ESPN Results scraper — copy()+paste approach
-const ESPN_RESULTS_SCRAPER = '(function(){try{var evts=window.__espnfitt__&&window.__espnfitt__.page&&window.__espnfitt__.page.content&&window.__espnfitt__.page.content.scoreboard&&window.__espnfitt__.page.content.scoreboard.evts||[];var results=evts.map(function(e){var comps=e.competitors||[];var home=comps.find(function(c){return c.isHome;})||comps[1]||{};var away=comps.find(function(c){return !c.isHome;})||comps[0]||{};return{id:e.id,away:away.displayName||"?",awayScore:away.score!=null?Number(away.score):null,home:home.displayName||"?",homeScore:home.score!=null?Number(home.score):null,state:e.status&&e.status.state};});var payload=JSON.stringify({type:"espn_results",data:results});if(typeof copy==="function"){copy(payload);console.log("✅ DONE! "+results.filter(function(r){return r.state==="post";}).length+" final games copied. Paste into Line Scout.");}else{console.log("✅ DONE! Right-click below → Copy string contents:");console.log(payload);}}catch(err){console.error("❌ Failed:",err.message);}})();';
-
-function fetchResults() {
+// ESPN Results — direct API fetch (no console scraping needed)
+async function fetchResults() {
   const dateStr = window.__currentArchiveDate;
   if (!dateStr) { addLog('Select an archive date first', 'warn'); return; }
   const btn = document.getElementById('fetchResultsBtn');
   const status = document.getElementById('fetchResultsStatus');
+  btn.disabled = true; btn.textContent = '⏳ Fetching...';
+  status.textContent = 'Fetching scores...'; status.style.color = 'var(--amber)';
 
-  const card = btn.closest('.card') || btn.parentElement;
-  document.getElementById('resultsScriptBox')?.remove();
-  const box = document.createElement('div');
-  box.id = 'resultsScriptBox';
-  box.style.cssText = 'margin-top:12px;background:var(--surface2);border:1px solid var(--green);border-radius:6px;padding:14px;';
-  box.innerHTML =
-    '<div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:8px">📡 ESPN Results Sync — 4 steps</div>' +
-    '<div style="font-size:11px;color:var(--text2);line-height:1.9;margin-bottom:10px">' +
-    '<strong style="color:var(--text)">1.</strong> Open <a href="https://www.espn.com/nhl/scoreboard" target="_blank" style="color:var(--blue)">espn.com/nhl/scoreboard</a> for the correct date<br>' +
-    '<strong style="color:var(--text)">2.</strong> Press <kbd style="background:var(--border2);padding:1px 5px;border-radius:3px">F12</kbd> → Console → paste script below → Enter<br>' +
-    '<strong style="color:var(--text)">3.</strong> Wait for "✅ DONE!" — results copy to clipboard<br>' +
-    '<strong style="color:var(--text)">4.</strong> Come back here → paste into box below → click Load Results</div>' +
-    '<div style="position:relative;margin-bottom:10px">' +
-    '<textarea id="resultsScriptBox_ta" readonly style="width:100%;height:52px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--border2);border-radius:4px;padding:8px;resize:none;line-height:1.4;word-break:break-all">' + ESPN_RESULTS_SCRAPER + '</textarea>' +
-    '<button onclick="var ta=document.getElementById(\'resultsScriptBox_ta\');ta.select();document.execCommand(\'copy\');this.textContent=\'✓ Copied!\';this.style.color=\'var(--green)\';var s=this;setTimeout(function(){s.textContent=\'Copy Script\';s.style.color=\'\';},2000);" style="position:absolute;top:6px;right:6px;font-family:var(--sans);font-size:10px;font-weight:600;padding:4px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--surface);color:var(--text2);cursor:pointer">Copy Script</button></div>' +
-    '<div style="font-size:11px;font-weight:600;color:var(--amber);margin-bottom:6px">📋 Paste ESPN results here:</div>' +
-    '<textarea id="resultsPasteBox" style="width:100%;height:60px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--amber);border-radius:4px;padding:8px;resize:none" placeholder="Run script on espn.com/nhl/scoreboard, then Ctrl+V here..."></textarea>' +
-    '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
-    '<button onclick="processResultsPaste(\'' + dateStr + '\')" class="btn-sm primary">⚡ Load Results</button>' +
-    '<button onclick="document.getElementById(\'resultsScriptBox\').remove();" class="btn-sm">✕ Cancel</button>' +
-    '<span id="resultsPasteStatus" style="font-size:10px;font-family:var(--mono);color:var(--text3)"></span></div>';
-  card.appendChild(box);
-  status.textContent = 'Awaiting paste...'; status.style.color = 'var(--amber)';
-}
-
-async function processResultsPaste(dateStr) {
-  const pasteBox = document.getElementById('resultsPasteBox');
-  const status = document.getElementById('fetchResultsStatus');
-  const pasteStatus = document.getElementById('resultsPasteStatus');
-  const raw = (pasteBox?.value || '').trim();
-  if (!raw) { pasteStatus.textContent = '✗ Paste box is empty'; pasteStatus.style.color = 'var(--red)'; return; }
   try {
-    const payload = JSON.parse(raw);
-    if (payload.type !== 'espn_results' || !payload.data) {
-      pasteStatus.textContent = '✗ Invalid format'; pasteStatus.style.color = 'var(--red)'; return;
+    // Convert archive date (YYYY-MM-DD) to ESPN format (YYYYMMDD)
+    const espnDate = dateStr.replace(/-/g, '');
+    const resp = await fetch('https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?dates=' + espnDate);
+    const data = await resp.json();
+    const events = data.events || [];
+
+    const results = events.map(function (ev) {
+      const comp = ev.competitions[0];
+      const home = comp.competitors.find(function (c) { return c.homeAway === 'home'; }) || comp.competitors[1] || {};
+      const away = comp.competitors.find(function (c) { return c.homeAway === 'away'; }) || comp.competitors[0] || {};
+      return {
+        id: ev.id,
+        away: away.team ? away.team.displayName : '?',
+        awayScore: away.score != null ? Number(away.score) : null,
+        home: home.team ? home.team.displayName : '?',
+        homeScore: home.score != null ? Number(home.score) : null,
+        state: ev.status ? ev.status.type.state : null,
+      };
+    });
+
+    const finalGames = results.filter(function (r) { return r.state === 'post'; });
+    if (finalGames.length === 0) {
+      status.textContent = '⚠ No final games yet for ' + dateStr;
+      status.style.color = 'var(--amber)';
+      addLog('Results: 0 final games for ' + dateStr, 'warn');
+    } else {
+      await applyESPNResults(dateStr, results);
+      status.textContent = '✓ ' + finalGames.length + ' final games applied';
+      status.style.color = 'var(--green)';
+      addLog('Results: ' + finalGames.length + ' final games fetched via API for ' + dateStr, 'ok');
     }
-    await applyESPNResults(dateStr, payload.data);
-    pasteStatus.textContent = '✓ Applied!'; pasteStatus.style.color = 'var(--green)';
-    status.textContent = '✓ Results loaded'; status.style.color = 'var(--green)';
-    document.getElementById('resultsScriptBox')?.remove();
   } catch (e) {
-    pasteStatus.textContent = '✗ JSON parse error: ' + e.message; pasteStatus.style.color = 'var(--red)';
-    addLog('Results paste error: ' + e.message, 'err');
+    status.textContent = '✗ Fetch failed: ' + e.message;
+    status.style.color = 'var(--red)';
+    addLog('Results fetch error: ' + e.message, 'err');
   }
+  btn.disabled = false; btn.textContent = '📡 Fetch Results';
 }
 
 async function applyESPNResults(dateStr, espnResults) {
