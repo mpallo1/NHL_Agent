@@ -558,18 +558,18 @@ const state = { running: false, lastRun: null, todayGames: [], todayPicks: [], e
 
 // ─── WEIGHTS ────────────────────────────────────────────────────────
 const DEFAULT_WEIGHTS = {
-  xg:          { label: 'xG share differential (base)',       value: 20 },
-  shotquality: { label: 'High-danger chance edge (HDCF%)',    value: 15 },
-  goalie:      { label: 'Goalie SV% (starter, situational)',  value: 22 },
-  gsax:        { label: 'GSAx (goals saved above expected)',  value: 8  },
+  xg:          { label: 'xG share differential (base)',       value: 30 },
+  shotquality: { label: 'High-danger chance edge (HDCF%)',    value: 18 },
+  goalie:      { label: 'Goalie SV% (starter, situational)',  value: 16 },
+  gsax:        { label: 'GSAx (goals saved above expected)',  value: 2  },
   powerplay:   { label: 'PP% / PK% edge',                    value: 12 },
-  recency:     { label: 'Recency (last-10 xGF% momentum)',   value: 8  },
-  rest:        { label: 'Rest advantage (days off)',          value: 5  },
-  context:     { label: 'Context (B2B, rest, travel)',        value: 6  },
-  divisional:  { label: 'Divisional compression',             value: 4  },
-  // Dormant — start at 0%, let post-mortem validate before activating
+  recency:     { label: 'Recency (last-10 xGF% momentum)',   value: 2  },
+  rest:        { label: 'Rest advantage (days off)',          value: 4  },
+  context:     { label: 'Context (B2B, rest, travel)',        value: 4  },
+  divisional:  { label: 'Divisional compression',             value: 0  },
+  // Dormant — post-mortem activates when signal confirmed
   regression:  { label: 'Record-vs-expected regression',      value: 0  },
-  workload:    { label: 'Goalie workload fatigue',            value: 0  },
+  workload:    { label: 'Goalie workload fatigue',            value: 8  },
   st_oppty:    { label: 'Special teams opportunity rate',     value: 0  },
 };
 
@@ -1330,11 +1330,11 @@ function computeSpread(g, weights) {
   const awayDiv = DIVISION_MAP[g.awayAbbr] || '';
   const homeDiv = DIVISION_MAP[g.homeAbbr] || '';
   const isDivisional = awayDiv && homeDiv && awayDiv === homeDiv;
-  const divisional_adj = isDivisional ? -0.08 : 0; // compresses fav advantage
+  const divisional_adj = isDivisional ? -0.05 : 0; // reduced from -0.08 per post-mortem r=-0.357
 
-  // ── 10. Home ice — 0.28 goals ───────────────────────────────────
+  // ── 10. Home ice — 0.22 goals (reduced from 0.28 per post-mortem r=-0.296)
   const isPlayoffs = !!(g.event && (g.event.includes('Playoff') || g.event.includes('Stanley Cup') || g.event.includes('Final')));
-  const site = (g.neutral_site || g.neutral) ? 0 : (favIsHome ? 0.28 : -0.28);
+  const site = (g.neutral_site || g.neutral) ? 0 : (favIsHome ? 0.22 : -0.22);
 
   // ── 11. PDO regression — scaled by season remaining ─────────────
   const fav_pdo = parseFloat(fav.pdo) || 100, dog_pdo = parseFloat(dog.pdo) || 100;
@@ -1426,7 +1426,7 @@ function computeSpread(g, weights) {
   const favSVSuppression = (favGoalie.sv - AVG_LEAGUE_SV) * 28.5;
   const dogSVSuppression = (dogGoalie.sv - AVG_LEAGUE_SV) * 28.5;
   // Divisional games trend under by ~0.25 goals
-  const divisionalTotalAdj = isDivisional ? -0.25 : 0;
+  const divisionalTotalAdj = isDivisional ? -0.15 : 0; // reduced from -0.25 per post-mortem
   const projectedTotal = (awayExpected + homeExpected) * paceMultiplier - favSVSuppression - dogSVSuppression + divisionalTotalAdj;
   const mktTotal = parseFloat(g.market_total) || null;
   const totalsEdge = mktTotal ? projectedTotal - mktTotal : 0;
@@ -2237,7 +2237,82 @@ async function runPostmortem() {
         const signal = cs.pearson > 0.1 ? 'UNDERWEIGHTED' : cs.pearson < -0.1 ? 'OVERWEIGHTED' : 'OK';
         const sigColor = signal === 'OK' ? 'var(--green)' : signal === 'UNDERWEIGHTED' ? 'var(--amber)' : 'var(--red)';
         return '<tr><td>' + k + '</td><td>' + cs.n + '</td><td>' + cs.avgComp + '</td><td>' + cs.mae + '</td><td>' + cs.pearson + '</td><td style="color:' + sigColor + ';font-weight:700">' + signal + '</td></tr>';
-      }).join('') + '</tbody></table></div></div>';
+      }).join('') + '</tbody></table></div></div>' +
+
+      // ── Suggested Weight Adjustments ──
+      '<div style="margin-bottom:16px">' +
+      '<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:10px">Suggested Weight Adjustments</div>' +
+      '<div id="suggestedWeightsContainer" style="font-family:var(--mono);font-size:11px;color:var(--text2);line-height:2"></div>' +
+      '<button class="btn-sm primary" id="applySuggestedBtn" style="margin-top:12px" onclick="applySuggestedWeights()">⚡ Apply Suggested Weights</button>' +
+      '<span id="applySuggestedStatus" style="margin-left:12px;font-size:11px;font-family:var(--mono);color:var(--text3)"></span>' +
+      '</div>';
+
+    // Compute suggested weights from Pearson correlations
+    const suggestedWeights = {};
+    const currentWeights = {};
+    try {
+      const cfgR = await store.get('model_config');
+      const cfg = cfgR ? JSON.parse(cfgR.value) : { weights: DEFAULT_WEIGHTS };
+      for (const k of Object.keys(DEFAULT_WEIGHTS)) {
+        currentWeights[k] = (cfg.weights[k] && cfg.weights[k].value) || DEFAULT_WEIGHTS[k].value;
+      }
+    } catch (e) {
+      for (const k of Object.keys(DEFAULT_WEIGHTS)) currentWeights[k] = DEFAULT_WEIGHTS[k].value;
+    }
+
+    // Adjustment logic: nudge weights based on Pearson signal
+    // Positive r = underweighted (increase), Negative r = overweighted (decrease)
+    // Scale: |r| * 30 = percentage points to shift (capped at ±5 per cycle)
+    let totalAdj = 0;
+    for (const k of Object.keys(DEFAULT_WEIGHTS)) {
+      const cs = compStats[k];
+      const curr = currentWeights[k];
+      if (!cs || curr === 0 && cs.pearson <= 0) {
+        // Dormant component with no underweight signal — leave at 0
+        suggestedWeights[k] = curr;
+        continue;
+      }
+      const nudge = Math.round(cs.pearson * 30);
+      const clamped = Math.max(-5, Math.min(5, nudge));
+      const newVal = Math.max(0, curr + clamped);
+      suggestedWeights[k] = newVal;
+      totalAdj += newVal - curr;
+    }
+    // Normalize so total = 100%
+    const rawTotal = Object.values(suggestedWeights).reduce(function (s, v) { return s + v; }, 0);
+    if (rawTotal > 0 && rawTotal !== 100) {
+      const scale = 100 / rawTotal;
+      for (const k of Object.keys(suggestedWeights)) {
+        suggestedWeights[k] = Math.round(suggestedWeights[k] * scale);
+      }
+      // Fix rounding to exactly 100
+      const diff = 100 - Object.values(suggestedWeights).reduce(function (s, v) { return s + v; }, 0);
+      if (diff !== 0) {
+        // Add/remove diff from the largest weight
+        const largest = Object.keys(suggestedWeights).reduce(function (a, b) { return suggestedWeights[a] > suggestedWeights[b] ? a : b; });
+        suggestedWeights[largest] += diff;
+      }
+    }
+
+    // Store for the apply button to use
+    window.__suggestedWeights = suggestedWeights;
+
+    // Display suggested changes
+    const swContainer = document.getElementById('suggestedWeightsContainer');
+    if (swContainer) {
+      let swHtml = '';
+      for (const k of Object.keys(DEFAULT_WEIGHTS)) {
+        const curr = currentWeights[k];
+        const sugg = suggestedWeights[k];
+        const delta = sugg - curr;
+        if (delta === 0) continue;
+        const color = delta > 0 ? 'var(--green)' : 'var(--red)';
+        const arrow = delta > 0 ? '↑' : '↓';
+        swHtml += '<div>' + k + ': ' + curr + '% → <span style="color:' + color + ';font-weight:600">' + sugg + '% ' + arrow + (delta > 0 ? '+' : '') + delta + '</span></div>';
+      }
+      if (!swHtml) swHtml = '<div style="color:var(--green)">No adjustments needed — weights are well-calibrated.</div>';
+      swContainer.innerHTML = swHtml;
+    }
 
     status.textContent = '✓ ' + errors.length + ' games'; status.style.color = 'var(--green)';
     addLog('Post-mortem: ' + errors.length + ' games, MAE=' + allTimeMAE.toFixed(2) + ', ' + maeTrend, 'ok');
@@ -2246,6 +2321,52 @@ async function runPostmortem() {
     status.textContent = '✗ Error'; status.style.color = 'var(--red)';
   }
   btn.disabled = false;
+}
+
+async function applySuggestedWeights() {
+  const suggested = window.__suggestedWeights;
+  if (!suggested) { return; }
+  const statusEl = document.getElementById('applySuggestedStatus');
+  try {
+    const cfgR = await store.get('model_config');
+    const cfg = cfgR ? JSON.parse(cfgR.value) : { weights: {} };
+
+    // Log the before state
+    const before = {};
+    for (const k of Object.keys(DEFAULT_WEIGHTS)) {
+      before[k] = (cfg.weights[k] && cfg.weights[k].value) || DEFAULT_WEIGHTS[k].value;
+    }
+
+    // Apply suggested weights
+    for (const k of Object.keys(suggested)) {
+      if (!cfg.weights[k]) cfg.weights[k] = { ...DEFAULT_WEIGHTS[k] };
+      cfg.weights[k].value = suggested[k];
+    }
+    await store.set('model_config', JSON.stringify(cfg));
+
+    // Update the Model Config sliders
+    for (const k of Object.keys(suggested)) {
+      const slider = document.getElementById('w_' + k);
+      const valEl = document.getElementById('wv_' + k);
+      if (slider) slider.value = suggested[k];
+      if (valEl) valEl.textContent = suggested[k] + '%';
+    }
+    const totalEl = document.getElementById('weightTotal');
+    if (totalEl) {
+      const total = Object.values(suggested).reduce(function (s, v) { return s + v; }, 0);
+      totalEl.textContent = 'Total: ' + total + '%';
+      totalEl.className = 'weight-total ' + (total === 100 ? 'ok' : 'bad');
+    }
+
+    // Log weight change
+    const after = {};
+    for (const k of Object.keys(suggested)) after[k] = suggested[k];
+    addLog('Post-mortem weights applied: ' + JSON.stringify(after), 'ok');
+
+    if (statusEl) { statusEl.textContent = '✓ Weights updated! Run analysis again to see impact.'; statusEl.style.color = 'var(--green)'; }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = '✗ Error: ' + e.message; statusEl.style.color = 'var(--red)'; }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
