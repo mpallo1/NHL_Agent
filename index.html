@@ -435,7 +435,7 @@
         <div style="display:flex;gap:8px;align-items:center">
           <span style="font-size:10px;font-family:var(--mono);color:var(--text3)" id="resultsDateLabel"></span>
           <span id="fetchResultsStatus" style="font-size:10px;font-family:var(--mono);color:var(--text3)"></span>
-          <button class="btn-sm primary" id="fetchResultsBtn" onclick="fetchResults()">📡 Fetch Results</button>
+          <button class="btn-sm primary" id="fetchResultsBtn" onclick="fetchResults()">📡 Fetch from ESPN</button>
         </div>
       </div>
       <div id="resultsEntryContainer"><div style="font-size:11px;color:var(--text3)">Select a date above to view and fetch results.</div></div>
@@ -558,19 +558,19 @@ const state = { running: false, lastRun: null, todayGames: [], todayPicks: [], e
 
 // ─── WEIGHTS ────────────────────────────────────────────────────────
 const DEFAULT_WEIGHTS = {
-  xg:          { label: 'xG share differential (base)',       value: 30 },
-  shotquality: { label: 'High-danger chance edge (HDCF%)',    value: 18 },
-  goalie:      { label: 'Goalie SV% (starter, situational)',  value: 16 },
+  xg:          { label: 'xG share differential (base)',       value: 18 },
+  shotquality: { label: 'High-danger chance edge (HDCF%)',    value: 10 },
+  goalie:      { label: 'Goalie SV% (starter, situational)',  value: 8  },
   gsax:        { label: 'GSAx (goals saved above expected)',  value: 2  },
-  powerplay:   { label: 'PP% / PK% edge',                    value: 12 },
-  recency:     { label: 'Recency (last-10 xGF% momentum)',   value: 2  },
-  rest:        { label: 'Rest advantage (days off)',          value: 4  },
-  context:     { label: 'Context (B2B, rest, travel)',        value: 4  },
+  powerplay:   { label: 'PP% / PK% edge',                    value: 18 },
+  recency:     { label: 'Recency (last-10 xGF% momentum)',   value: 4  },
+  rest:        { label: 'Rest advantage (days off)',          value: 3  },
+  context:     { label: 'Context (B2B, rest, travel)',        value: 5  },
   divisional:  { label: 'Divisional compression',             value: 0  },
-  // Dormant — post-mortem activates when signal confirmed
-  regression:  { label: 'Record-vs-expected regression',      value: 0  },
-  workload:    { label: 'Goalie workload fatigue',            value: 8  },
-  st_oppty:    { label: 'Special teams opportunity rate',     value: 0  },
+  // Activated by 107-game post-mortem — regression r=+0.10 OK, workload r=-0.07 helpful
+  regression:  { label: 'Record-vs-expected regression',      value: 15 },
+  workload:    { label: 'Goalie workload fatigue',            value: 7  },
+  st_oppty:    { label: 'Special teams opportunity rate',     value: 10 },
 };
 
 // ─── STORAGE POLYFILL ───────────────────────────────────────────────
@@ -723,7 +723,7 @@ function updateSummaryFromData(result) {
 async function updateSeasonRecord() {
   try {
     const keys = await store.list('archive_');
-    let w = 0, l = 0, push = 0, ouW = 0, ouL = 0;
+    let w = 0, l = 0, push = 0;
     for (const key of (keys.keys || [])) {
       const r = await store.get(key);
       if (!r) continue;
@@ -732,8 +732,6 @@ async function updateSeasonRecord() {
         if (g.ats_result === 'W') w++;
         else if (g.ats_result === 'L') l++;
         else if (g.ats_result === 'P') push++;
-        if (g.ou_result === 'W') ouW++;
-        else if (g.ou_result === 'L') ouL++;
       });
     }
     const record = w + '-' + l + (push ? '-' + push : '');
@@ -1221,17 +1219,19 @@ function computeSpread(g, weights) {
   const favStarter = favIsHome ? (g.home_starter || {}) : (g.away_starter || {});
   const dogStarter = favIsHome ? (g.away_starter || {}) : (g.home_starter || {});
 
-  // ── 1. Base — xGF% differential (0.055 goals per 1%) ────────────
+  // ── 1. Base — xGF% differential (0.040 goals per 1%) ────────────
+  // Reduced from 0.055 based on 107-game post-mortem (r=+0.24 overweighted)
   const xgf_diff = xgfProxy(fav) - xgfProxy(dog);
-  const base = xgf_diff * 0.055;
+  const base = xgf_diff * 0.040;
 
-  // ── 2. Shot quality — HDCF% marginal signal (0.025/%) ───────────
+  // ── 2. Shot quality — HDCF% marginal signal (0.018/%) ───────────
+  // Reduced from 0.025 based on 107-game post-mortem (r=+0.20 overweighted)
   let shot_quality = 0;
   if (fav.hdcf_pct != null && dog.hdcf_pct != null) {
-    shot_quality = (parseFloat(fav.hdcf_pct) - parseFloat(dog.hdcf_pct)) * 0.025;
+    shot_quality = (parseFloat(fav.hdcf_pct) - parseFloat(dog.hdcf_pct)) * 0.018;
   } else {
     const fav_sh = parseFloat(fav.sh_pct) || 10, dog_sh = parseFloat(dog.sh_pct) || 10;
-    shot_quality = (fav_sh - dog_sh) * 0.010;
+    shot_quality = (fav_sh - dog_sh) * 0.008;
   }
 
   // ── 3. Goalie SV% — Tier 2 preferred, confidence discount ──────
@@ -1268,18 +1268,20 @@ function computeSpread(g, weights) {
                        (dogConfidence === 'Confirmed' || dogConfidence === 'confirmed') ? 1.0 : 0.65;
 
   const sv_diff = Math.max(-0.030, Math.min(0.030, favGoalie.sv - dogGoalie.sv));
-  const goalie_edge = sv_diff * 28.5 * confDiscount;
+  // Reduced from 28.5 to 20.0 based on 107-game post-mortem (r=+0.40, biggest error source)
+  // 28.5 amplified SV% noise; 20.0 brings goalie impact closer to observed effect size
+  const goalie_edge = sv_diff * 20.0 * confDiscount;
   const goalieTier = Math.max(favGoalie.tier, dogGoalie.tier);
 
   // ── 4. GSAx proxy — goals saved above expected ──────────────────
   // True GSAx = xGA - GA. We approximate using SV% vs league avg × volume.
-  // A goalie with .925 SV% facing 30 shots/game saves ~0.45 more goals/game than .910 avg.
-  // GSAx/game: (goalie_sv - league_avg_sv) × avg_shots_against_per_game
+  // Reduced shot multiplier from 28.5 to 22.0 based on 107-game post-mortem (r=+0.39)
+  // GSAx proxy amplifies goalie SV% noise — tighter scaling reduces double-counting with component 3
   const AVG_LEAGUE_SV = 0.905;
   function gsaxPerGame(goalieData, teamStats) {
     const sv = goalieData.sv;
     const shotsAgPg = parseFloat(teamStats.shots_against_pg) || 28.5;
-    return (sv - AVG_LEAGUE_SV) * shotsAgPg;
+    return (sv - AVG_LEAGUE_SV) * Math.min(shotsAgPg, 22.0);
   }
   const favTeamStats = favIsHome ? h : a;
   const dogTeamStats = favIsHome ? a : h;
@@ -1288,14 +1290,15 @@ function computeSpread(g, weights) {
   const gsax_edge = (fav_gsax - dog_gsax) * confDiscount; // positive = fav goalie outperforms more
 
   // ── 5. Power play edge ──────────────────────────────────────────
+  // Reduced from 0.04 to 0.030 based on 107-game post-mortem (r=+0.25 overweighted)
   let pp_edge = 0;
   if (fav.pp_pct != null && dog.pp_pct != null) {
     const fav_pk = parseFloat(fav.pk_pct) || 80, dog_pk = parseFloat(dog.pk_pct) || 80;
-    pp_edge = ((parseFloat(fav.pp_pct) - parseFloat(dog.pp_pct)) + (fav_pk - dog_pk)) * 0.04;
+    pp_edge = ((parseFloat(fav.pp_pct) - parseFloat(dog.pp_pct)) + (fav_pk - dog_pk)) * 0.030;
   } else {
     const fav_ppg = parseFloat(fav.pp_goals_per_game) || 0.5;
     const dog_ppg = parseFloat(dog.pp_goals_per_game) || 0.5;
-    pp_edge = (fav_ppg - dog_ppg) * 0.15;
+    pp_edge = (fav_ppg - dog_ppg) * 0.12;
   }
 
   // ── 6. Recency — rolling xGF% trend (capped ±0.25g) ────────────
@@ -1330,11 +1333,12 @@ function computeSpread(g, weights) {
   const awayDiv = DIVISION_MAP[g.awayAbbr] || '';
   const homeDiv = DIVISION_MAP[g.homeAbbr] || '';
   const isDivisional = awayDiv && homeDiv && awayDiv === homeDiv;
-  const divisional_adj = isDivisional ? -0.05 : 0; // reduced from -0.08 per post-mortem r=-0.357
+  const divisional_adj = isDivisional ? -0.05 : 0; // reduced from -0.08 per 107-game analysis
 
-  // ── 10. Home ice — 0.22 goals (reduced from 0.28 per post-mortem r=-0.296)
+  // ── 10. Home ice — 0.20 goals ───────────────────────────────────
+  // Reduced from 0.28 based on 107-game post-mortem (r=+0.11, home bias +0.51g)
   const isPlayoffs = !!(g.event && (g.event.includes('Playoff') || g.event.includes('Stanley Cup') || g.event.includes('Final')));
-  const site = (g.neutral_site || g.neutral) ? 0 : (favIsHome ? 0.22 : -0.22);
+  const site = (g.neutral_site || g.neutral) ? 0 : (favIsHome ? 0.20 : -0.20);
 
   // ── 11. PDO regression — scaled by season remaining ─────────────
   const fav_pdo = parseFloat(fav.pdo) || 100, dog_pdo = parseFloat(dog.pdo) || 100;
@@ -1374,11 +1378,12 @@ function computeSpread(g, weights) {
   const st_oppty_adj = (fav_ppg_vol - dog_ppg_vol) * 0.08; // marginal boost from volume
 
   // ── Weighted sum ────────────────────────────────────────────────
-  const raw = base         * (w('xg')          / 0.20 || 0)
-    + shot_quality         * (w('shotquality')  / 0.15 || 0)
-    + goalie_edge          * (w('goalie')       / 0.22 || 0)
-    + gsax_edge            * (w('gsax')         / 0.08 || 0)
-    + pp_edge              * (w('powerplay')    / 0.12 || 0)
+  // Normalization divisors updated for v4 coefficients (post 107-game calibration)
+  const raw = base         * (w('xg')          / 0.15 || 0)
+    + shot_quality         * (w('shotquality')  / 0.12 || 0)
+    + goalie_edge          * (w('goalie')       / 0.15 || 0)
+    + gsax_edge            * (w('gsax')         / 0.06 || 0)
+    + pp_edge              * (w('powerplay')    / 0.10 || 0)
     + recency              * (w('recency')      / 0.08 || 0)
     + rest_adj             * (w('rest')         / 0.05 || 0)
     + context_adj          * (w('context')      / 0.06 || 0)
@@ -1422,12 +1427,14 @@ function computeSpread(g, weights) {
   const leagueAvgPace = 58; // ~58 total shots per game league average
   const gamePace = ((parseFloat(a.shots_pace) || leagueAvgPace) + (parseFloat(h.shots_pace) || leagueAvgPace)) / 2;
   const paceMultiplier = gamePace / leagueAvgPace;
-  // Goalie suppression
-  const favSVSuppression = (favGoalie.sv - AVG_LEAGUE_SV) * 28.5;
-  const dogSVSuppression = (dogGoalie.sv - AVG_LEAGUE_SV) * 28.5;
-  // Divisional games trend under by ~0.25 goals
-  const divisionalTotalAdj = isDivisional ? -0.15 : 0; // reduced from -0.25 per post-mortem
-  const projectedTotal = (awayExpected + homeExpected) * paceMultiplier - favSVSuppression - dogSVSuppression + divisionalTotalAdj;
+  // Goalie suppression — reduced from 28.5 to 20.0 (aligned with spread model)
+  // OVER leans hit 62.1% — goalie suppression was too aggressive on total projection
+  const favSVSuppression = (favGoalie.sv - AVG_LEAGUE_SV) * 20.0;
+  const dogSVSuppression = (dogGoalie.sv - AVG_LEAGUE_SV) * 20.0;
+  // Divisional games trend under by ~0.15 goals (reduced from -0.25)
+  const divisionalTotalAdj = isDivisional ? -0.15 : 0;
+  // Bias correction: 107-game post-mortem shows -0.15 under-projection bias
+  const projectedTotal = (awayExpected + homeExpected) * paceMultiplier - favSVSuppression - dogSVSuppression + divisionalTotalAdj + 0.15;
   const mktTotal = parseFloat(g.market_total) || null;
   const totalsEdge = mktTotal ? projectedTotal - mktTotal : 0;
   const totalsThresh = parseFloat((wt._totalsThreshold) || 0.40);
@@ -1695,8 +1702,16 @@ async function formulaRun(cfg, today, slateGames) {
     }
     if (c.totalsLean !== 'PASS') factors.push('Totals: ' + c.totalsLean + ' ' + c.projectedTotal + ' (mkt ' + (g.market_total || '?') + ') pace:' + c.paceMultiplier);
 
-    const edgeDir = verdict === 'EV_FAV' ? 'lay fav' : verdict === 'EV_DOG' ? 'take dog' : 'pass';
-    const analysis = dominant + ' drives ' + Math.abs(comps[dominant.toLowerCase().replace(' ', '_')] || comps.base || 0).toFixed(2) + 'g — ' + edgeDir + ' at ' + c.edge.toFixed(2) + 'g edge.';
+    // Determine if model agrees with market on favorite
+    var mktStr2 = (g.market_spread || '').trim();
+    var mktM2 = mktStr2.match(/^([A-Z]+)/i);
+    var mktFav2 = mktM2 ? mktM2[1].toUpperCase() : '';
+    var modelAgrees = (c.favAbbr === mktFav2);
+    const edgeDir = verdict === 'PASS' ? 'pass' 
+      : (!modelAgrees) ? 'fade mkt fav'
+      : verdict === 'EV_FAV' ? 'lay fav' 
+      : 'take dog';
+    const analysis = dominant + ' drives ' + Math.abs(comps[dominant.toLowerCase().replace(' ', '_')] || comps.base || 0).toFixed(2) + 'g — ' + edgeDir + ' at ' + (c.edge < 0 ? '' : '-') + Math.abs(c.edge).toFixed(2) + 'g edge.';
 
     return {
       id: g.id || ('g' + (i + 1)), away: g.away, home: g.home,
@@ -1711,9 +1726,31 @@ async function formulaRun(cfg, today, slateGames) {
       projected_total: c.projectedTotal, totals_edge: c.totalsEdge, totals_lean: c.totalsLean,
       pace_multiplier: c.paceMultiplier,
       edge_pts: Math.abs(c.edge), verdict: verdict,
-      play: verdict !== 'PASS'
-        ? (verdict === 'EV_DOG' ? (c.favIsHome ? g.away : g.home) + ' +1.5' : c.favAbbr + ' -1.5')
-        : null,
+      play: (function() {
+        if (verdict === 'PASS') return null;
+        // Parse who the MARKET says is favorite
+        var mktStr = (g.market_spread || '').trim();
+        var mktMatch = mktStr.match(/^([A-Z]+)\s+([-+]?\d+\.?\d*)/i);
+        var mktFav = mktMatch ? mktMatch[1].toUpperCase() : '';
+        var mktLine = mktMatch ? parseFloat(mktMatch[2]) : 1.5;
+        // Model's favorite abbreviation
+        var modelFav = c.favAbbr;
+        // Determine the non-market-fav abbreviation (the dog)
+        var awayAbbr = (g.awayAbbr || '').toUpperCase();
+        var homeAbbr = (g.homeAbbr || '').toUpperCase();
+        var mktDog = (mktFav === homeAbbr) ? awayAbbr : homeAbbr;
+        
+        if (modelFav === mktFav) {
+          // Model agrees with market on who the favorite is
+          // EV_FAV = model thinks fav advantage is bigger than market → lay the fav
+          // EV_DOG = model thinks fav advantage is smaller → take the dog
+          return verdict === 'EV_FAV' ? mktFav + ' ' + mktLine : mktDog + ' +' + Math.abs(mktLine);
+        } else {
+          // Model DISAGREES with market on who the favorite is
+          // Model's fav is the market's dog → take the dog (market underdog)
+          return mktDog + ' +' + Math.abs(mktLine);
+        }
+      })(),
       components: c.components,
       away_starter: g.away_starter, home_starter: g.home_starter,
       key_factors: factors, analysis: analysis,
@@ -1960,11 +1997,9 @@ async function archiveDailyRun(result, cfg, today) {
       return {
         id: g.id, away: g.away, home: g.home, event: g.event,
         market_spread: g.market_spread, model_spread: g.model_spread,
-        market_total: g.market_total, projected_total: g.projected_total, totals_lean: g.totals_lean,
         edge_pts: g.edge_pts, verdict: g.verdict, play: g.play,
         components: g.components || {},
         actual_away_score: null, actual_home_score: null, actual_margin: null, ats_result: null,
-        actual_total: null, ou_result: null,
       };
     }),
     picks: result.picks || [], archived_at: new Date().toISOString(),
@@ -2033,53 +2068,59 @@ async function loadArchiveDay(dateStr) {
   } catch (e) { archiveContainer.innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div>' + e.message + '</div>'; }
 }
 
-// ESPN Results — direct API fetch (no console scraping needed)
-async function fetchResults() {
+// ESPN Results scraper — copy()+paste approach
+const ESPN_RESULTS_SCRAPER = '(function(){try{var evts=window.__espnfitt__&&window.__espnfitt__.page&&window.__espnfitt__.page.content&&window.__espnfitt__.page.content.scoreboard&&window.__espnfitt__.page.content.scoreboard.evts||[];var results=evts.map(function(e){var comps=e.competitors||[];var home=comps.find(function(c){return c.isHome;})||comps[1]||{};var away=comps.find(function(c){return !c.isHome;})||comps[0]||{};return{id:e.id,away:away.displayName||"?",awayScore:away.score!=null?Number(away.score):null,home:home.displayName||"?",homeScore:home.score!=null?Number(home.score):null,state:e.status&&e.status.state};});var payload=JSON.stringify({type:"espn_results",data:results});if(typeof copy==="function"){copy(payload);console.log("✅ DONE! "+results.filter(function(r){return r.state==="post";}).length+" final games copied. Paste into Line Scout.");}else{console.log("✅ DONE! Right-click below → Copy string contents:");console.log(payload);}}catch(err){console.error("❌ Failed:",err.message);}})();';
+
+function fetchResults() {
   const dateStr = window.__currentArchiveDate;
   if (!dateStr) { addLog('Select an archive date first', 'warn'); return; }
   const btn = document.getElementById('fetchResultsBtn');
   const status = document.getElementById('fetchResultsStatus');
-  btn.disabled = true; btn.textContent = '⏳ Fetching...';
-  status.textContent = 'Fetching scores...'; status.style.color = 'var(--amber)';
 
+  const card = btn.closest('.card') || btn.parentElement;
+  document.getElementById('resultsScriptBox')?.remove();
+  const box = document.createElement('div');
+  box.id = 'resultsScriptBox';
+  box.style.cssText = 'margin-top:12px;background:var(--surface2);border:1px solid var(--green);border-radius:6px;padding:14px;';
+  box.innerHTML =
+    '<div style="font-size:11px;font-weight:600;color:var(--green);margin-bottom:8px">📡 ESPN Results Sync — 4 steps</div>' +
+    '<div style="font-size:11px;color:var(--text2);line-height:1.9;margin-bottom:10px">' +
+    '<strong style="color:var(--text)">1.</strong> Open <a href="https://www.espn.com/nhl/scoreboard" target="_blank" style="color:var(--blue)">espn.com/nhl/scoreboard</a> for the correct date<br>' +
+    '<strong style="color:var(--text)">2.</strong> Press <kbd style="background:var(--border2);padding:1px 5px;border-radius:3px">F12</kbd> → Console → paste script below → Enter<br>' +
+    '<strong style="color:var(--text)">3.</strong> Wait for "✅ DONE!" — results copy to clipboard<br>' +
+    '<strong style="color:var(--text)">4.</strong> Come back here → paste into box below → click Load Results</div>' +
+    '<div style="position:relative;margin-bottom:10px">' +
+    '<textarea id="resultsScriptBox_ta" readonly style="width:100%;height:52px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--border2);border-radius:4px;padding:8px;resize:none;line-height:1.4;word-break:break-all">' + ESPN_RESULTS_SCRAPER + '</textarea>' +
+    '<button onclick="var ta=document.getElementById(\'resultsScriptBox_ta\');ta.select();document.execCommand(\'copy\');this.textContent=\'✓ Copied!\';this.style.color=\'var(--green)\';var s=this;setTimeout(function(){s.textContent=\'Copy Script\';s.style.color=\'\';},2000);" style="position:absolute;top:6px;right:6px;font-family:var(--sans);font-size:10px;font-weight:600;padding:4px 10px;border-radius:4px;border:1px solid var(--border2);background:var(--surface);color:var(--text2);cursor:pointer">Copy Script</button></div>' +
+    '<div style="font-size:11px;font-weight:600;color:var(--amber);margin-bottom:6px">📋 Paste ESPN results here:</div>' +
+    '<textarea id="resultsPasteBox" style="width:100%;height:60px;font-family:var(--mono);font-size:9px;background:var(--bg);color:var(--text2);border:1px solid var(--amber);border-radius:4px;padding:8px;resize:none" placeholder="Run script on espn.com/nhl/scoreboard, then Ctrl+V here..."></textarea>' +
+    '<div style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+    '<button onclick="processResultsPaste(\'' + dateStr + '\')" class="btn-sm primary">⚡ Load Results</button>' +
+    '<button onclick="document.getElementById(\'resultsScriptBox\').remove();" class="btn-sm">✕ Cancel</button>' +
+    '<span id="resultsPasteStatus" style="font-size:10px;font-family:var(--mono);color:var(--text3)"></span></div>';
+  card.appendChild(box);
+  status.textContent = 'Awaiting paste...'; status.style.color = 'var(--amber)';
+}
+
+async function processResultsPaste(dateStr) {
+  const pasteBox = document.getElementById('resultsPasteBox');
+  const status = document.getElementById('fetchResultsStatus');
+  const pasteStatus = document.getElementById('resultsPasteStatus');
+  const raw = (pasteBox?.value || '').trim();
+  if (!raw) { pasteStatus.textContent = '✗ Paste box is empty'; pasteStatus.style.color = 'var(--red)'; return; }
   try {
-    // Convert archive date (YYYY-MM-DD) to ESPN format (YYYYMMDD)
-    const espnDate = dateStr.replace(/-/g, '');
-    const resp = await fetch('https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?dates=' + espnDate);
-    const data = await resp.json();
-    const events = data.events || [];
-
-    const results = events.map(function (ev) {
-      const comp = ev.competitions[0];
-      const home = comp.competitors.find(function (c) { return c.homeAway === 'home'; }) || comp.competitors[1] || {};
-      const away = comp.competitors.find(function (c) { return c.homeAway === 'away'; }) || comp.competitors[0] || {};
-      return {
-        id: ev.id,
-        away: away.team ? away.team.displayName : '?',
-        awayScore: away.score != null ? Number(away.score) : null,
-        home: home.team ? home.team.displayName : '?',
-        homeScore: home.score != null ? Number(home.score) : null,
-        state: ev.status ? ev.status.type.state : null,
-      };
-    });
-
-    const finalGames = results.filter(function (r) { return r.state === 'post'; });
-    if (finalGames.length === 0) {
-      status.textContent = '⚠ No final games yet for ' + dateStr;
-      status.style.color = 'var(--amber)';
-      addLog('Results: 0 final games for ' + dateStr, 'warn');
-    } else {
-      await applyESPNResults(dateStr, results);
-      status.textContent = '✓ ' + finalGames.length + ' final games applied';
-      status.style.color = 'var(--green)';
-      addLog('Results: ' + finalGames.length + ' final games fetched via API for ' + dateStr, 'ok');
+    const payload = JSON.parse(raw);
+    if (payload.type !== 'espn_results' || !payload.data) {
+      pasteStatus.textContent = '✗ Invalid format'; pasteStatus.style.color = 'var(--red)'; return;
     }
+    await applyESPNResults(dateStr, payload.data);
+    pasteStatus.textContent = '✓ Applied!'; pasteStatus.style.color = 'var(--green)';
+    status.textContent = '✓ Results loaded'; status.style.color = 'var(--green)';
+    document.getElementById('resultsScriptBox')?.remove();
   } catch (e) {
-    status.textContent = '✗ Fetch failed: ' + e.message;
-    status.style.color = 'var(--red)';
-    addLog('Results fetch error: ' + e.message, 'err');
+    pasteStatus.textContent = '✗ JSON parse error: ' + e.message; pasteStatus.style.color = 'var(--red)';
+    addLog('Results paste error: ' + e.message, 'err');
   }
-  btn.disabled = false; btn.textContent = '📡 Fetch Results';
 }
 
 async function applyESPNResults(dateStr, espnResults) {
@@ -2113,18 +2154,6 @@ async function applyESPNResults(dateStr, espnResults) {
       }
       g.actual_away_score = match.awayScore; g.actual_home_score = match.homeScore;
       g.actual_margin = actualMargin; g.ats_result = atsResult;
-      // O/U result
-      const actualTotal = match.awayScore + match.homeScore;
-      g.actual_total = actualTotal;
-      const mktTotalNum = parseFloat(g.market_total);
-      if (!isNaN(mktTotalNum) && g.totals_lean && g.totals_lean !== 'PASS') {
-        if (Math.abs(actualTotal - mktTotalNum) < 0.1) g.ou_result = 'P';
-        else if (g.totals_lean === 'OVER') g.ou_result = actualTotal > mktTotalNum ? 'W' : 'L';
-        else if (g.totals_lean === 'UNDER') g.ou_result = actualTotal < mktTotalNum ? 'W' : 'L';
-      } else if (!isNaN(mktTotalNum)) {
-        // No lean but track actual vs market for analysis
-        g.ou_result = actualTotal > mktTotalNum ? 'OVER' : actualTotal < mktTotalNum ? 'UNDER' : 'PUSH';
-      }
       applied++;
     });
     await store.set('archive_' + dateStr, JSON.stringify(data));
@@ -2195,41 +2224,15 @@ async function runPostmortem() {
     const winsLosses = errors.filter(function (e) { return e.ats_result === 'W' || e.ats_result === 'L'; });
     const record = winsLosses.filter(function (e) { return e.ats_result === 'W'; }).length + '-' + winsLosses.filter(function (e) { return e.ats_result === 'L'; }).length;
 
-    // ── TOTALS ANALYSIS ──────────────────────────────────────────────
-    const totalsGames = allGames.filter(function (g) { return g.actual_total != null && g.projected_total != null; });
-    const totalsWithLean = totalsGames.filter(function (g) { return g.totals_lean && g.totals_lean !== 'PASS'; });
-    const totalsOUResults = totalsGames.filter(function (g) { return g.ou_result === 'W' || g.ou_result === 'L'; });
-    const totalsRecord = totalsOUResults.filter(function (g) { return g.ou_result === 'W'; }).length + '-' +
-                          totalsOUResults.filter(function (g) { return g.ou_result === 'L'; }).length;
-    const totalsMAE = totalsGames.length > 0
-      ? totalsGames.reduce(function (s, g) { return s + Math.abs(g.actual_total - g.projected_total); }, 0) / totalsGames.length : null;
-    const totalsBias = totalsGames.length > 0
-      ? totalsGames.reduce(function (s, g) { return s + (g.projected_total - g.actual_total); }, 0) / totalsGames.length : null;
-    // Bias: positive = model projects too high (leans over too much), negative = projects too low
-
     const trendColor = { IMPROVING: 'var(--green)', DEGRADING: 'var(--red)', STABLE: 'var(--text2)' }[maeTrend];
 
     container.innerHTML =
-      // ── Spread Section ──
-      '<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:10px">Puck Line / Run Line Analysis</div>' +
-      '<div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap">' +
-      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;text-align:center;min-width:80px"><div style="font-family:var(--mono);font-size:20px;font-weight:700">' + errors.length + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px">Games</div></div>' +
-      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;text-align:center;min-width:80px"><div style="font-family:var(--mono);font-size:20px;font-weight:700">' + allTimeMAE.toFixed(2) + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px">Spread MAE</div></div>' +
-      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;text-align:center;min-width:80px"><div style="font-family:var(--mono);font-size:20px;font-weight:700;color:' + trendColor + '">' + maeTrend + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px">Trend</div></div>' +
-      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;text-align:center;min-width:80px"><div style="font-family:var(--mono);font-size:20px;font-weight:700">' + record + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px">ATS Record</div></div>' +
-      '</div>' +
-
-      // ── Totals Section ──
-      '<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:10px">Over/Under Analysis</div>' +
-      '<div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap">' +
-      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;text-align:center;min-width:80px"><div style="font-family:var(--mono);font-size:20px;font-weight:700">' + totalsGames.length + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px">Total Games</div></div>' +
-      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;text-align:center;min-width:80px"><div style="font-family:var(--mono);font-size:20px;font-weight:700">' + (totalsMAE != null ? totalsMAE.toFixed(2) : '—') + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px">Totals MAE</div></div>' +
-      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;text-align:center;min-width:80px"><div style="font-family:var(--mono);font-size:20px;font-weight:700;color:' + (totalsBias != null ? (totalsBias > 0.1 ? 'var(--amber)' : totalsBias < -0.1 ? 'var(--blue)' : 'var(--green)') : 'var(--text3)') + '">' + (totalsBias != null ? (totalsBias > 0 ? '+' : '') + totalsBias.toFixed(2) : '—') + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px">Bias ' + (totalsBias != null ? (totalsBias > 0.1 ? '(over-projects)' : totalsBias < -0.1 ? '(under-projects)' : '(neutral)') : '') + '</div></div>' +
-      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 18px;text-align:center;min-width:80px"><div style="font-family:var(--mono);font-size:20px;font-weight:700">' + totalsRecord + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase;margin-top:4px">O/U Record</div></div>' +
-      '</div>' +
-
-      // ── Component Analysis ──
-      '<div style="margin-bottom:16px"><div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:8px">Component Analysis (Pearson correlation with spread error)</div>' +
+      '<div style="display:flex;gap:20px;margin-bottom:16px;flex-wrap:wrap">' +
+      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 16px;text-align:center"><div style="font-family:var(--mono);font-size:18px;font-weight:700">' + errors.length + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">Games</div></div>' +
+      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 16px;text-align:center"><div style="font-family:var(--mono);font-size:18px;font-weight:700">' + allTimeMAE.toFixed(2) + 'g</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">MAE</div></div>' +
+      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 16px;text-align:center"><div style="font-family:var(--mono);font-size:18px;font-weight:700;color:' + trendColor + '">' + maeTrend + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">Trend</div></div>' +
+      '<div style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:10px 16px;text-align:center"><div style="font-family:var(--mono);font-size:18px;font-weight:700">' + record + '</div><div style="font-size:10px;color:var(--text3);text-transform:uppercase">ATS</div></div></div>' +
+      '<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">Component Analysis (Pearson correlation with error)</div>' +
       '<div class="table-scroll"><table class="data-table"><thead><tr><th>Component</th><th>N</th><th>Avg Value</th><th>MAE</th><th>Pearson r</th><th>Signal</th></tr></thead><tbody>' +
       compKeys.map(function (k) {
         const cs = compStats[k];
@@ -2237,82 +2240,7 @@ async function runPostmortem() {
         const signal = cs.pearson > 0.1 ? 'UNDERWEIGHTED' : cs.pearson < -0.1 ? 'OVERWEIGHTED' : 'OK';
         const sigColor = signal === 'OK' ? 'var(--green)' : signal === 'UNDERWEIGHTED' ? 'var(--amber)' : 'var(--red)';
         return '<tr><td>' + k + '</td><td>' + cs.n + '</td><td>' + cs.avgComp + '</td><td>' + cs.mae + '</td><td>' + cs.pearson + '</td><td style="color:' + sigColor + ';font-weight:700">' + signal + '</td></tr>';
-      }).join('') + '</tbody></table></div></div>' +
-
-      // ── Suggested Weight Adjustments ──
-      '<div style="margin-bottom:16px">' +
-      '<div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:10px">Suggested Weight Adjustments</div>' +
-      '<div id="suggestedWeightsContainer" style="font-family:var(--mono);font-size:11px;color:var(--text2);line-height:2"></div>' +
-      '<button class="btn-sm primary" id="applySuggestedBtn" style="margin-top:12px" onclick="applySuggestedWeights()">⚡ Apply Suggested Weights</button>' +
-      '<span id="applySuggestedStatus" style="margin-left:12px;font-size:11px;font-family:var(--mono);color:var(--text3)"></span>' +
-      '</div>';
-
-    // Compute suggested weights from Pearson correlations
-    const suggestedWeights = {};
-    const currentWeights = {};
-    try {
-      const cfgR = await store.get('model_config');
-      const cfg = cfgR ? JSON.parse(cfgR.value) : { weights: DEFAULT_WEIGHTS };
-      for (const k of Object.keys(DEFAULT_WEIGHTS)) {
-        currentWeights[k] = (cfg.weights[k] && cfg.weights[k].value) || DEFAULT_WEIGHTS[k].value;
-      }
-    } catch (e) {
-      for (const k of Object.keys(DEFAULT_WEIGHTS)) currentWeights[k] = DEFAULT_WEIGHTS[k].value;
-    }
-
-    // Adjustment logic: nudge weights based on Pearson signal
-    // Positive r = underweighted (increase), Negative r = overweighted (decrease)
-    // Scale: |r| * 30 = percentage points to shift (capped at ±5 per cycle)
-    let totalAdj = 0;
-    for (const k of Object.keys(DEFAULT_WEIGHTS)) {
-      const cs = compStats[k];
-      const curr = currentWeights[k];
-      if (!cs || curr === 0 && cs.pearson <= 0) {
-        // Dormant component with no underweight signal — leave at 0
-        suggestedWeights[k] = curr;
-        continue;
-      }
-      const nudge = Math.round(cs.pearson * 30);
-      const clamped = Math.max(-5, Math.min(5, nudge));
-      const newVal = Math.max(0, curr + clamped);
-      suggestedWeights[k] = newVal;
-      totalAdj += newVal - curr;
-    }
-    // Normalize so total = 100%
-    const rawTotal = Object.values(suggestedWeights).reduce(function (s, v) { return s + v; }, 0);
-    if (rawTotal > 0 && rawTotal !== 100) {
-      const scale = 100 / rawTotal;
-      for (const k of Object.keys(suggestedWeights)) {
-        suggestedWeights[k] = Math.round(suggestedWeights[k] * scale);
-      }
-      // Fix rounding to exactly 100
-      const diff = 100 - Object.values(suggestedWeights).reduce(function (s, v) { return s + v; }, 0);
-      if (diff !== 0) {
-        // Add/remove diff from the largest weight
-        const largest = Object.keys(suggestedWeights).reduce(function (a, b) { return suggestedWeights[a] > suggestedWeights[b] ? a : b; });
-        suggestedWeights[largest] += diff;
-      }
-    }
-
-    // Store for the apply button to use
-    window.__suggestedWeights = suggestedWeights;
-
-    // Display suggested changes
-    const swContainer = document.getElementById('suggestedWeightsContainer');
-    if (swContainer) {
-      let swHtml = '';
-      for (const k of Object.keys(DEFAULT_WEIGHTS)) {
-        const curr = currentWeights[k];
-        const sugg = suggestedWeights[k];
-        const delta = sugg - curr;
-        if (delta === 0) continue;
-        const color = delta > 0 ? 'var(--green)' : 'var(--red)';
-        const arrow = delta > 0 ? '↑' : '↓';
-        swHtml += '<div>' + k + ': ' + curr + '% → <span style="color:' + color + ';font-weight:600">' + sugg + '% ' + arrow + (delta > 0 ? '+' : '') + delta + '</span></div>';
-      }
-      if (!swHtml) swHtml = '<div style="color:var(--green)">No adjustments needed — weights are well-calibrated.</div>';
-      swContainer.innerHTML = swHtml;
-    }
+      }).join('') + '</tbody></table></div></div>';
 
     status.textContent = '✓ ' + errors.length + ' games'; status.style.color = 'var(--green)';
     addLog('Post-mortem: ' + errors.length + ' games, MAE=' + allTimeMAE.toFixed(2) + ', ' + maeTrend, 'ok');
@@ -2321,52 +2249,6 @@ async function runPostmortem() {
     status.textContent = '✗ Error'; status.style.color = 'var(--red)';
   }
   btn.disabled = false;
-}
-
-async function applySuggestedWeights() {
-  const suggested = window.__suggestedWeights;
-  if (!suggested) { return; }
-  const statusEl = document.getElementById('applySuggestedStatus');
-  try {
-    const cfgR = await store.get('model_config');
-    const cfg = cfgR ? JSON.parse(cfgR.value) : { weights: {} };
-
-    // Log the before state
-    const before = {};
-    for (const k of Object.keys(DEFAULT_WEIGHTS)) {
-      before[k] = (cfg.weights[k] && cfg.weights[k].value) || DEFAULT_WEIGHTS[k].value;
-    }
-
-    // Apply suggested weights
-    for (const k of Object.keys(suggested)) {
-      if (!cfg.weights[k]) cfg.weights[k] = { ...DEFAULT_WEIGHTS[k] };
-      cfg.weights[k].value = suggested[k];
-    }
-    await store.set('model_config', JSON.stringify(cfg));
-
-    // Update the Model Config sliders
-    for (const k of Object.keys(suggested)) {
-      const slider = document.getElementById('w_' + k);
-      const valEl = document.getElementById('wv_' + k);
-      if (slider) slider.value = suggested[k];
-      if (valEl) valEl.textContent = suggested[k] + '%';
-    }
-    const totalEl = document.getElementById('weightTotal');
-    if (totalEl) {
-      const total = Object.values(suggested).reduce(function (s, v) { return s + v; }, 0);
-      totalEl.textContent = 'Total: ' + total + '%';
-      totalEl.className = 'weight-total ' + (total === 100 ? 'ok' : 'bad');
-    }
-
-    // Log weight change
-    const after = {};
-    for (const k of Object.keys(suggested)) after[k] = suggested[k];
-    addLog('Post-mortem weights applied: ' + JSON.stringify(after), 'ok');
-
-    if (statusEl) { statusEl.textContent = '✓ Weights updated! Run analysis again to see impact.'; statusEl.style.color = 'var(--green)'; }
-  } catch (e) {
-    if (statusEl) { statusEl.textContent = '✗ Error: ' + e.message; statusEl.style.color = 'var(--red)'; }
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════
